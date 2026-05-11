@@ -1,0 +1,37 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <title>Gargaros Bridge — Options</title>
+  <style>
+    body { font-family: system-ui, sans-serif; margin: 24px; max-width: 540px; color: #222; }
+    h1 { font-size: 18px; margin-bottom: 8px; }
+    p { font-size: 13px; color: #555; }
+    label { display: block; font-size: 13px; margin-top: 16px; }
+    input[type=text] { width: 100%; padding: 8px; font-family: ui-monospace, monospace; box-sizing: border-box; }
+    button { margin-top: 16px; padding: 8px 14px; cursor: pointer; }
+    .ok { color: #0a7d2c; }
+    .err { color: #b3261e; }
+    .tip { margin-top: 16px; padding: 10px; background: #f3f4f6; border-radius: 6px; font-size: 12px; }
+  </style>
+</head>
+<body>
+  <h1>Gargaros Bridge</h1>
+  <p>Paste your Gargaros bearer token (from <code>%APPDATA%\Gargaros\token</code>). The extension long-polls the server for jobs and won't do anything without a token.</p>
+
+  <label for="url">Gargaros base URL</label>
+  <input id="url" type="text" placeholder="http://127.0.0.1:7331" />
+
+  <label for="token">Bearer token</label>
+  <input id="token" type="text" placeholder="paste token here" />
+
+  <button id="save">Save</button>
+  <span id="status"></span>
+
+  <div class="tip">
+    Tip: open <code>chrome://extensions</code>, enable Developer mode, then click "Service worker" under Gargaros Bridge to view live logs. The service worker should reconnect automatically after saving.
+  </div>
+
+  <script src="options.js"></script>
+</body>
+</html>

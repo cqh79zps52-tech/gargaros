@@ -1,0 +1,65 @@
+[project]
+name = "gargaros"
+version = "0.3.0"
+description = "Open-source Windows local HTTP control surface for AI agents (eyehands-compatible API on top of Windows-MCP)."
+authors = [{ name = "Gargaros contributors" }]
+readme = "README.md"
+license = { text = "MIT" }
+requires-python = ">=3.13"
+keywords = ["windows", "ai-agent", "automation", "mcp", "computer-use"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: Microsoft :: Windows :: Windows 10",
+    "Operating System :: Microsoft :: Windows :: Windows 11",
+    "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
+]
+dependencies = [
+    "windows-mcp>=0.7.4",
+    "mcp>=1.0",
+    "litestar>=2.10",
+    "uvicorn[standard]>=0.30",
+    "pillow>=11.0",
+    "msgspec>=0.18",
+    "platformdirs>=4.3",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0",
+    "pytest-asyncio>=0.24",
+    "httpx>=0.27",
+    "ruff>=0.6",
+]
+ocr = [
+    "rapidocr>=3.8",
+    "onnxruntime>=1.18",
+]
+
+[project.scripts]
+gargaros = "gargaros.__main__:main"
+gargaros-mcp = "gargaros.mcp_server:main"
+
+[project.urls]
+Homepage = "https://github.com/your-name/gargaros"
+"Upstream (Windows-MCP)" = "https://github.com/CursorTouch/Windows-MCP"
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py313"
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "B", "UP"]
+ignore = ["E501"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "auto"
