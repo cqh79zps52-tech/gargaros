@@ -242,6 +242,81 @@ def input_release_all() -> dict:
     return _c().input_release_all()
 
 
+# ---- F8 window management ----
+
+
+@mcp.tool()
+def window_list(visible_only: bool = True) -> list[dict]:
+    """Enumerate top-level visible windows. Each entry has hwnd, title, process_name,
+    pid, is_foreground, is_visible, is_minimized, bounds. Use this to find Chrome
+    (xCloud) before sending inputs."""
+    return _c().window_list(visible_only=visible_only)
+
+
+@mcp.tool()
+def window_active() -> dict:
+    """Return the currently-foreground window. SendInput targets whatever this returns,
+    so verify it matches the intended target before any /key or /mouse call."""
+    return _c().window_active()
+
+
+@mcp.tool()
+def window_focus(selector: dict, restore_if_minimized: bool = True) -> dict:
+    """Bring a window to the foreground. Selector keys: title_contains (case-insensitive
+    substring), title_regex, process_name, hwnd. 404 if no match, 409 if multiple match
+    (refine the selector)."""
+    return _c().window_focus(selector=selector, restore_if_minimized=restore_if_minimized)
+
+
+@mcp.tool()
+def window_wait_for_focus(selector: dict, timeout_ms: int = 5000) -> dict:
+    """Wait until a window matching `selector` becomes foreground. Returns 408 if the
+    timeout elapses. Use right after window_focus to confirm Chrome actually got
+    activated before sending the first key."""
+    return _c().window_wait_for_focus(selector=selector, timeout_ms=timeout_ms)
+
+
+# ---- F9 physical input lock ----
+
+
+@mcp.tool()
+def input_lock(
+    unlock_hotkey: str = "ctrl+shift+f12",
+    allow_safe_keys: bool = True,
+    block_keyboard: bool = True,
+    block_mouse: bool = True,
+    watchdog_ms: int = 2000,
+) -> dict:
+    """Install low-level keyboard/mouse hooks that block PHYSICAL input from the user
+    while letting Gargaros' injected events through. Use during an autonomous game
+    session so the user can't accidentally type into the game window.
+
+    The unlock_hotkey is always allowed and triggers automatic unlock. Win+L,
+    Alt+F4, and Ctrl+Alt+Del are also passed through. A child watchdog process is
+    spawned that will force-kill Gargaros if it stops responding — preventing a
+    stuck-keyboard scenario if the server hangs."""
+    return _c().input_lock(
+        unlock_hotkey=unlock_hotkey,
+        allow_safe_keys=allow_safe_keys,
+        block_keyboard=block_keyboard,
+        block_mouse=block_mouse,
+        watchdog_ms=watchdog_ms,
+    )
+
+
+@mcp.tool()
+def input_unlock() -> dict:
+    """Remove the input lock and stop the watchdog. Idempotent."""
+    return _c().input_unlock()
+
+
+@mcp.tool()
+def input_lock_status() -> dict:
+    """Report whether the input lock is active and the stats (blocked physical events,
+    passed injected events, elapsed time)."""
+    return _c().input_lock_status()
+
+
 def main() -> None:
     mcp.run(transport="stdio")
 

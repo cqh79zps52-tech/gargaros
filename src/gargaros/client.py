@@ -121,24 +121,56 @@ class Client:
             to = {"x": to[0], "y": to[1]}
         self._post("/drag", {"from": src, "to": to, "button": button})
 
-    def batch(self, actions: list[dict], continue_on_error: bool = False) -> dict:
+    def batch(
+        self,
+        actions: list[dict],
+        continue_on_error: bool = False,
+        expect_focus: dict | None = None,
+    ) -> dict:
         """Execute a batch of actions. Returns the full response dict
-        (total_elapsed_ms, succeeded, failed, results)."""
-        return self._post("/batch", {"actions": actions, "continue_on_error": continue_on_error})
+        (total_elapsed_ms, succeeded, failed, results). expect_focus is checked
+        once at the start of the batch."""
+        body: dict[str, Any] = {"actions": actions, "continue_on_error": continue_on_error}
+        if expect_focus is not None:
+            body["expect_focus"] = expect_focus
+        return self._post("/batch", body)
 
     # ---- gaming: held keys (F3) ----
 
-    def key_hold(self, name: str, duration_ms: int, modifiers: list[str] | None = None) -> dict:
-        return self._post("/key/hold", {"name": name, "duration_ms": duration_ms, "modifiers": modifiers or []})
+    def key_hold(
+        self,
+        name: str,
+        duration_ms: int,
+        modifiers: list[str] | None = None,
+        expect_focus: dict | None = None,
+    ) -> dict:
+        body: dict[str, Any] = {"name": name, "duration_ms": duration_ms, "modifiers": modifiers or []}
+        if expect_focus is not None:
+            body["expect_focus"] = expect_focus
+        return self._post("/key/hold", body)
 
-    def key_down(self, name: str) -> dict:
-        return self._post("/key/down", {"name": name})
+    def key_down(self, name: str, expect_focus: dict | None = None) -> dict:
+        body: dict[str, Any] = {"name": name}
+        if expect_focus is not None:
+            body["expect_focus"] = expect_focus
+        return self._post("/key/down", body)
 
-    def key_up(self, name: str) -> dict:
-        return self._post("/key/up", {"name": name})
+    def key_up(self, name: str, expect_focus: dict | None = None) -> dict:
+        body: dict[str, Any] = {"name": name}
+        if expect_focus is not None:
+            body["expect_focus"] = expect_focus
+        return self._post("/key/up", body)
 
-    def key_sequence(self, keys: list[dict], inter_key_delay_ms: int = 30) -> dict:
-        return self._post("/key/sequence", {"keys": keys, "inter_key_delay_ms": inter_key_delay_ms})
+    def key_sequence(
+        self,
+        keys: list[dict],
+        inter_key_delay_ms: int = 30,
+        expect_focus: dict | None = None,
+    ) -> dict:
+        body: dict[str, Any] = {"keys": keys, "inter_key_delay_ms": inter_key_delay_ms}
+        if expect_focus is not None:
+            body["expect_focus"] = expect_focus
+        return self._post("/key/sequence", body)
 
     def key_release_all(self) -> dict:
         return self._post("/key/release_all", {})
@@ -152,17 +184,23 @@ class Client:
         duration_ms: int = 200,
         steps: int = 20,
         mode: str = "absolute",
+        expect_focus: dict | None = None,
     ) -> dict:
         """Move the mouse smoothly. mode='absolute' (default) uses SetCursorPos and updates
         the visible cursor. mode='relative' sends raw motion deltas (MOUSEEVENTF_MOVE) —
         required for pointer-locked apps like Chrome fullscreen cloud gaming."""
-        return self._post(
-            "/mouse/move_smooth",
-            {"dx": dx, "dy": dy, "duration_ms": duration_ms, "steps": steps, "mode": mode},
-        )
+        body: dict[str, Any] = {
+            "dx": dx, "dy": dy, "duration_ms": duration_ms, "steps": steps, "mode": mode,
+        }
+        if expect_focus is not None:
+            body["expect_focus"] = expect_focus
+        return self._post("/mouse/move_smooth", body)
 
-    def mouse_button(self, button: str, action: str) -> dict:
-        return self._post("/mouse/button", {"button": button, "action": action})
+    def mouse_button(self, button: str, action: str, expect_focus: dict | None = None) -> dict:
+        body: dict[str, Any] = {"button": button, "action": action}
+        if expect_focus is not None:
+            body["expect_focus"] = expect_focus
+        return self._post("/mouse/button", body)
 
     def mouse_release_all(self) -> dict:
         return self._post("/mouse/release_all", {})
@@ -171,6 +209,64 @@ class Client:
 
     def input_release_all(self) -> dict:
         return self._post("/input/release_all", {})
+
+    # ---- F8 window management ----
+
+    def window_list(self, visible_only: bool = True) -> list[dict]:
+        r = self._http.get("/window/list", params={"visible_only": visible_only})
+        r.raise_for_status()
+        return r.json()
+
+    def window_active(self) -> dict:
+        r = self._http.get("/window/active")
+        r.raise_for_status()
+        return r.json()
+
+    def window_focus(self, selector: dict, restore_if_minimized: bool = True) -> dict:
+        return self._post(
+            "/window/focus",
+            {"selector": selector, "restore_if_minimized": restore_if_minimized},
+        )
+
+    def window_wait_for_focus(
+        self,
+        selector: dict,
+        timeout_ms: int = 5000,
+        poll_interval_ms: int = 50,
+    ) -> dict:
+        return self._post(
+            "/window/wait_for_focus",
+            {"selector": selector, "timeout_ms": timeout_ms, "poll_interval_ms": poll_interval_ms},
+        )
+
+    # ---- F9 input lock ----
+
+    def input_lock(
+        self,
+        unlock_hotkey: str = "ctrl+shift+f12",
+        allow_safe_keys: bool = True,
+        block_keyboard: bool = True,
+        block_mouse: bool = True,
+        watchdog_ms: int = 2000,
+    ) -> dict:
+        return self._post(
+            "/input/lock",
+            {
+                "unlock_hotkey": unlock_hotkey,
+                "allow_safe_keys": allow_safe_keys,
+                "block_keyboard": block_keyboard,
+                "block_mouse": block_mouse,
+                "watchdog_ms": watchdog_ms,
+            },
+        )
+
+    def input_unlock(self) -> dict:
+        return self._post("/input/unlock", {})
+
+    def input_lock_status(self) -> dict:
+        r = self._http.get("/input/lock_status")
+        r.raise_for_status()
+        return r.json()
 
     # ---- ui ----
 
