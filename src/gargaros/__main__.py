@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import atexit
 import logging
 import sys
 
@@ -7,6 +8,7 @@ import uvicorn
 
 from gargaros.app import build_app
 from gargaros.config import load
+from gargaros.input_state import emergency_release_sync
 from gargaros.token_store import load_or_create
 
 
@@ -21,6 +23,9 @@ def main() -> int:
         flush=True,
     )
     app = build_app(settings, token=token)
+    # Section 8 backstop: if uvicorn dies hard and lifespan shutdown doesn't run,
+    # atexit still fires for sys.exit / unhandled-exception paths.
+    atexit.register(emergency_release_sync, app.state.input_state)
     uvicorn.run(app, host=settings.host, port=settings.port, log_level="info")
     return 0
 
