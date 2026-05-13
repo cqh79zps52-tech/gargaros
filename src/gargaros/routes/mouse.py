@@ -17,6 +17,8 @@ import time
 from litestar import Request, post
 from msgspec import Struct
 
+from gargaros.routes.window import check_expect_focus
+
 
 class MouseMoveSmoothBody(Struct):
     dx: int
@@ -24,11 +26,13 @@ class MouseMoveSmoothBody(Struct):
     duration_ms: int = 200
     steps: int = 20
     mode: str = "absolute"  # backward-compat default; "relative" for pointer-locked apps
+    expect_focus: dict | None = None
 
 
 class MouseButtonBody(Struct):
     button: str
     action: str
+    expect_focus: dict | None = None
 
 
 def _split_steps(total: int, steps: int) -> list[int]:
@@ -41,6 +45,7 @@ def _split_steps(total: int, steps: int) -> list[int]:
 
 @post("/mouse/move_smooth")
 async def mouse_move_smooth(request: Request, data: MouseMoveSmoothBody) -> dict:
+    check_expect_focus(data.expect_focus)
     driver = request.app.state.input_driver
     steps = max(1, data.steps)
     mode = data.mode.lower()
@@ -75,6 +80,7 @@ async def mouse_move_smooth(request: Request, data: MouseMoveSmoothBody) -> dict
 
 @post("/mouse/button")
 async def mouse_button(request: Request, data: MouseButtonBody) -> dict:
+    check_expect_focus(data.expect_focus)
     state = request.app.state.input_state
     action = data.action.lower()
     if action == "down":

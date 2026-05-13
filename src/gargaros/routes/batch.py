@@ -18,6 +18,7 @@ from litestar.exceptions import ClientException
 from msgspec import Struct
 
 from gargaros import translate
+from gargaros.routes.window import check_expect_focus
 
 _RESERVED = {"type", "op", "args"}
 
@@ -25,6 +26,7 @@ _RESERVED = {"type", "op", "args"}
 class BatchBody(Struct):
     actions: list[dict[str, Any]]
     continue_on_error: bool = False
+    expect_focus: dict | None = None
 
 
 def _extract_op_and_args(action: dict[str, Any]) -> tuple[str, dict[str, Any]]:
@@ -170,6 +172,7 @@ _OP_HANDLERS: dict[str, Callable[[Request, dict[str, Any]], Awaitable[None]]] = 
 
 @post("/batch")
 async def batch(request: Request, data: BatchBody) -> dict:
+    check_expect_focus(data.expect_focus)
     settings = request.app.state.settings
     if len(data.actions) > settings.batch_max:
         raise ClientException(detail=f"too many actions; max {settings.batch_max}")

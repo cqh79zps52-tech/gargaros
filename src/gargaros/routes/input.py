@@ -6,6 +6,7 @@ from litestar import Request, post
 from msgspec import Struct
 
 from gargaros import translate
+from gargaros.routes.window import check_expect_focus
 
 
 class ClickBody(Struct):
@@ -13,6 +14,7 @@ class ClickBody(Struct):
     y: int
     button: str = "left"
     double: bool = False
+    expect_focus: dict | None = None
 
 
 class MoveBody(Struct):
@@ -29,6 +31,7 @@ class TypeBody(Struct):
 class KeyBody(Struct):
     name: str
     modifiers: list[str] = []
+    expect_focus: dict | None = None
 
 
 class ScrollBody(Struct):
@@ -51,6 +54,7 @@ class DragBody(Struct):
 
 @post("/click")
 async def click(request: Request, data: ClickBody) -> dict:
+    check_expect_focus(data.expect_focus)
     args = translate.click_args(x=data.x, y=data.y, button=data.button, double=data.double)
     await request.app.state.backend.call_tool("Click", args)
     return {"ok": True}
@@ -92,6 +96,7 @@ async def type_text(request: Request, data: TypeBody) -> dict:
 
 @post("/key")
 async def key(request: Request, data: KeyBody) -> dict:
+    check_expect_focus(data.expect_focus)
     shortcut = translate.shortcut_string(name=data.name, modifiers=data.modifiers)
     await request.app.state.backend.call_tool("Shortcut", {"shortcut": shortcut})
     return {"ok": True}

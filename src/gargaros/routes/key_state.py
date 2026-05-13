@@ -12,15 +12,19 @@ import time
 from litestar import Request, post
 from msgspec import Struct
 
+from gargaros.routes.window import check_expect_focus
+
 
 class KeyHoldBody(Struct):
     name: str
     duration_ms: int
     modifiers: list[str] = []
+    expect_focus: dict | None = None
 
 
 class KeyNameBody(Struct):
     name: str
+    expect_focus: dict | None = None
 
 
 class KeySequenceItem(Struct):
@@ -31,10 +35,12 @@ class KeySequenceItem(Struct):
 class KeySequenceBody(Struct):
     keys: list[KeySequenceItem]
     inter_key_delay_ms: int = 30
+    expect_focus: dict | None = None
 
 
 @post("/key/hold")
 async def key_hold(request: Request, data: KeyHoldBody) -> dict:
+    check_expect_focus(data.expect_focus)
     state = request.app.state.input_state
     start = time.monotonic()
     pressed_mods: list[str] = []
@@ -57,6 +63,7 @@ async def key_hold(request: Request, data: KeyHoldBody) -> dict:
 
 @post("/key/down")
 async def key_down(request: Request, data: KeyNameBody) -> dict:
+    check_expect_focus(data.expect_focus)
     state = request.app.state.input_state
     was_new = await state.press_key(data.name)
     return {"state": "down", "newly_pressed": was_new}
@@ -64,6 +71,7 @@ async def key_down(request: Request, data: KeyNameBody) -> dict:
 
 @post("/key/up")
 async def key_up(request: Request, data: KeyNameBody) -> dict:
+    check_expect_focus(data.expect_focus)
     state = request.app.state.input_state
     held_s = await state.release_key(data.name)
     if held_s is None:
@@ -73,6 +81,7 @@ async def key_up(request: Request, data: KeyNameBody) -> dict:
 
 @post("/key/sequence")
 async def key_sequence(request: Request, data: KeySequenceBody) -> dict:
+    check_expect_focus(data.expect_focus)
     state = request.app.state.input_state
     start = time.monotonic()
     inter = max(0, data.inter_key_delay_ms) / 1000
