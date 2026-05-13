@@ -11,8 +11,13 @@ def test_batch_runs_actions_in_order(client, auth_headers, fake_backend):
     }
     r = client.post("/batch", json=body, headers=auth_headers)
     assert r.status_code == 201
-    results = r.json()["results"]
-    assert [x["ok"] for x in results] == [True, True, True]
+    body_out = r.json()
+    assert body_out["succeeded"] == 3
+    assert body_out["failed"] == 0
+    assert "total_elapsed_ms" in body_out
+    results = body_out["results"]
+    assert [x["status"] for x in results] == ["ok", "ok", "ok"]
+    assert all("elapsed_ms" in x for x in results)
     tool_names = [name for (name, _) in fake_backend.calls]
     assert tool_names == ["Move", "Click", "Type"]
 
@@ -32,11 +37,14 @@ def test_batch_unknown_op_stops_by_default(client, auth_headers, fake_backend):
         ]
     }
     r = client.post("/batch", json=body, headers=auth_headers)
-    results = r.json()["results"]
+    out = r.json()
+    results = out["results"]
     assert len(results) == 2  # stopped at unknown op
-    assert results[0]["ok"] is True
-    assert results[1]["ok"] is False
+    assert results[0]["status"] == "ok"
+    assert results[1]["status"] == "error"
     assert "unknown" in results[1]["error"].lower()
+    assert out["succeeded"] == 1
+    assert out["failed"] == 1
 
 
 def test_batch_continue_on_error(client, auth_headers):
@@ -49,6 +57,7 @@ def test_batch_continue_on_error(client, auth_headers):
         ],
     }
     r = client.post("/batch", json=body, headers=auth_headers)
-    results = r.json()["results"]
-    assert len(results) == 3
-    assert [x["ok"] for x in results] == [True, False, True]
+    out = r.json()
+    assert out["succeeded"] == 2
+    assert out["failed"] == 1
+    assert [x["status"] for x in out["results"]] == ["ok", "error", "ok"]

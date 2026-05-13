@@ -47,7 +47,7 @@ async def find(
     cache: OCRCache = state.ocr_cache
     runner = getattr(state, "ocr_runner", ocr_run)
 
-    raw = await _capture(request, monitor)
+    raw, _capture_ms = await _capture(request, monitor)
     body = _encode_jpeg(raw, 80)
     frame = state.frame_cache.store(monitor, body)
 
