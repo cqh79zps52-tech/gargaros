@@ -75,6 +75,52 @@ Full OpenAPI schema: `http://127.0.0.1:7331/schema`.
 
 `/find` runs OCR on the current screen and returns a list of `{text, bbox:[x,y,w,h], center:[cx,cy], confidence}` matches. Results are cached per frame hash, so repeated calls on a static screen return instantly.
 
+### Gaming Automation (Phase 3, v0.4)
+
+These endpoints bypass Windows-MCP and drive `SendInput` / `SetCursorPos` directly from Gargaros — they support held keys (W-to-walk, Shift-to-sprint), smooth mouse motion in both absolute (visible-cursor) and relative (pointer-lock / raw input) modes, region capture, and synchronous timing.
+
+| Method | Path | Body / params |
+|---|---|---|
+| POST | `/key/hold` | `{name, duration_ms, modifiers?}` — press, wait, release |
+| POST | `/key/down` | `{name}` — press without releasing |
+| POST | `/key/up` | `{name}` — release a previously-pressed key (idempotent) |
+| POST | `/key/sequence` | `{keys:[{name,hold_ms}], inter_key_delay_ms?}` |
+| POST | `/key/release_all` | release every held key + button |
+| POST | `/mouse/move_smooth` | `{dx, dy, duration_ms, steps, mode}` — `mode`: `absolute` (default, SetCursorPos) or `relative` (raw deltas for pointer-locked apps) |
+| POST | `/mouse/button` | `{button, action}` — left/right/middle × down/up |
+| POST | `/mouse/release_all` | release every held mouse button |
+| POST | `/input/release_all` | global cleanup — release everything |
+| GET | `/screenshot?bbox=x1,y1,x2,y2` | crop the capture to a region (useful to isolate the cloud-game video stream from browser chrome) |
+
+The `/batch` endpoint accepts these as flat-field actions (per the F1 CDC):
+
+```json
+POST /batch
+{
+  "actions": [
+    {"type": "mouse_move_smooth", "dx": 90, "dy": 0, "duration_ms": 150, "steps": 8},
+    {"type": "key_down", "name": "w"},
+    {"type": "sleep", "ms": 200},
+    {"type": "key", "name": "space"},
+    {"type": "key_up", "name": "w"}
+  ]
+}
+```
+
+Response shape: `{total_elapsed_ms, succeeded, failed, results:[{index, type, status, elapsed_ms, error?}]}`.
+
+**State tracking & cleanup.** Held keys / buttons are tracked server-side. The state is released:
+- on every server shutdown (lifespan + atexit backstop),
+- on server startup (recovery from a previous crash),
+- by a watchdog task that auto-releases anything held > 30 s,
+- via the `/input/release_all` endpoint at any time.
+
+This is non-negotiable for gaming: a Gargaros crash with `W` down would jam the user's keyboard.
+
+**Pointer lock note.** Fullscreen browser games (Xbox Cloud Gaming, GeForce Now, etc.) capture the pointer — at that point the visible cursor is hidden and only raw motion deltas reach the game. Always pass `mode="relative"` to `mouse_move_smooth` once you're in such a context, otherwise the camera won't turn. See `docs/CLOUD_GAMING.md` for the full setup (xCloud Fortnite as worked example).
+
+> ⚠️ **Anti-cheat warning.** Direct `SendInput` is detectable by kernel-mode anti-cheats (Easy Anti-Cheat, Vanguard, BattlEye, Ricochet) on locally-installed games. Cloud streaming routes input through the browser, sidestepping local kernel AC — but the streaming service's ToS still prohibits automation (Microsoft xCloud, etc.). **Use a burner account only.**
+
 OCR support requires the optional `[ocr]` extra:
 
 ```powershell
@@ -156,6 +202,14 @@ On the smoke-test machine (Windows 11, Python 3.14): 10 sequential `/screenshot`
 **130 ms** end-to-end, including Pillow JPEG re-encoding. The eyehands product claims 57 ms; we're
 slower because (a) we go through MCP JSON-RPC, and (b) we re-encode PNG→JPEG. Skipping the
 re-encode (return PNG directly) gets close to the underlying DXcam latency.
+
+Since v0.4, `/screenshot?raw=true` bypasses Pillow entirely and streams the raw DXcam PNG. The
+response includes `X-Capture-Time-Ms` and `X-Encode-Time-Ms` headers so agents can profile.
+
+```python
+img, meta = g.screenshot(raw=True, return_meta=True)
+# meta = {"capture_time_ms": 67, "encode_time_ms": 0, "content_type": "image/png"}
+```
 
 ## Credits
 

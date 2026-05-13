@@ -47,9 +47,16 @@ def health() -> dict:
 
 
 @mcp.tool()
-def screenshot(monitor: int = 0) -> str:
-    """Capture a JPEG screenshot of the current desktop. Returns base64-encoded bytes."""
-    return base64.b64encode(_c().screenshot(monitor=monitor)).decode("ascii")
+def screenshot(
+    monitor: int = 0,
+    raw: bool = False,
+    bbox: list[int] | None = None,
+) -> str:
+    """Capture a screenshot. Default returns JPEG (smaller); set raw=True for PNG without Pillow
+    re-encoding (~40% faster, larger output). bbox=[x1,y1,x2,y2] crops to a region — useful to
+    isolate the cloud-gaming video stream from the browser chrome. Returns base64-encoded bytes."""
+    rect = tuple(bbox) if bbox else None  # type: ignore[arg-type]
+    return base64.b64encode(_c().screenshot(monitor=monitor, raw=raw, bbox=rect)).decode("ascii")
 
 
 @mcp.tool()
@@ -155,6 +162,159 @@ def browser_navigate(url: str, tab_id: int | None = None, wait_for_load: bool = 
 def browser_tabs() -> list[dict]:
     """List currently open browser tabs."""
     return _c().browser_tabs()
+
+
+# ---- Gaming primitives (F3-F5) ----
+
+
+@mcp.tool()
+def key_hold(name: str, duration_ms: int, modifiers: list[str] | None = None) -> dict:
+    """Press and hold a key for `duration_ms`, then release. Use this when you need a held
+    input (walking forward in a game with W, sprinting with Shift, charging an attack).
+    Don't use for single taps — use `key` instead. Don't use for sequences — use `key_sequence`."""
+    return _c().key_hold(name, duration_ms, modifiers=modifiers)
+
+
+@mcp.tool()
+def key_down(name: str) -> dict:
+    """Press a key down without releasing it. You MUST pair this with a later `key_up` or
+    `input_release_all`, otherwise the key stays stuck. Prefer `key_hold` for time-bounded holds."""
+    return _c().key_down(name)
+
+
+@mcp.tool()
+def key_up(name: str) -> dict:
+    """Release a previously-held key. Idempotent — calling on a key that isn't down returns 200
+    with a warning, not an error."""
+    return _c().key_up(name)
+
+
+@mcp.tool()
+def key_sequence(keys: list[dict], inter_key_delay_ms: int = 30) -> dict:
+    """Execute a sequence of timed key presses, e.g. avance+saute+avance.
+    `keys` is a list of {"name": "w", "hold_ms": 800}. Use this for combos that are tighter
+    than what a batch of key_hold calls would give. Always cleans up — no stuck keys on error."""
+    return _c().key_sequence(keys, inter_key_delay_ms=inter_key_delay_ms)
+
+
+@mcp.tool()
+def key_release_all() -> dict:
+    """Release every currently-held key AND mouse button (alias of input_release_all).
+    Call this as a safety net if you ever doubt the input state."""
+    return _c().key_release_all()
+
+
+@mcp.tool()
+def mouse_move_smooth(
+    dx: int,
+    dy: int,
+    duration_ms: int = 200,
+    steps: int = 20,
+    mode: str = "absolute",
+) -> dict:
+    """Move the mouse smoothly over time. Use mode='relative' when the application has captured
+    the pointer (fullscreen games, including cloud gaming streams with pointer lock — Chrome on
+    xbox.com/play). Use mode='absolute' (default) for normal desktop interactions where the
+    visible cursor should move to a new position. dx/dy are pixels in absolute mode, mickeys
+    (raw motion deltas) in relative mode. The duration is split into 'steps' smaller movements
+    to avoid teleporting the camera."""
+    return _c().mouse_move_smooth(dx, dy, duration_ms=duration_ms, steps=steps, mode=mode)
+
+
+@mcp.tool()
+def mouse_button(button: str, action: str) -> dict:
+    """Press or release a mouse button. button: left/right/middle. action: down/up.
+    Use for held interactions like right-click to ADS in shooters. State is tracked so the
+    button is released on server shutdown."""
+    return _c().mouse_button(button, action)
+
+
+@mcp.tool()
+def mouse_release_all() -> dict:
+    """Release every currently-held mouse button."""
+    return _c().mouse_release_all()
+
+
+@mcp.tool()
+def input_release_all() -> dict:
+    """Release every held key and mouse button. The big red button for cleanup —
+    call when something feels stuck."""
+    return _c().input_release_all()
+
+
+# ---- F8 window management ----
+
+
+@mcp.tool()
+def window_list(visible_only: bool = True) -> list[dict]:
+    """Enumerate top-level visible windows. Each entry has hwnd, title, process_name,
+    pid, is_foreground, is_visible, is_minimized, bounds. Use this to find Chrome
+    (xCloud) before sending inputs."""
+    return _c().window_list(visible_only=visible_only)
+
+
+@mcp.tool()
+def window_active() -> dict:
+    """Return the currently-foreground window. SendInput targets whatever this returns,
+    so verify it matches the intended target before any /key or /mouse call."""
+    return _c().window_active()
+
+
+@mcp.tool()
+def window_focus(selector: dict, restore_if_minimized: bool = True) -> dict:
+    """Bring a window to the foreground. Selector keys: title_contains (case-insensitive
+    substring), title_regex, process_name, hwnd. 404 if no match, 409 if multiple match
+    (refine the selector)."""
+    return _c().window_focus(selector=selector, restore_if_minimized=restore_if_minimized)
+
+
+@mcp.tool()
+def window_wait_for_focus(selector: dict, timeout_ms: int = 5000) -> dict:
+    """Wait until a window matching `selector` becomes foreground. Returns 408 if the
+    timeout elapses. Use right after window_focus to confirm Chrome actually got
+    activated before sending the first key."""
+    return _c().window_wait_for_focus(selector=selector, timeout_ms=timeout_ms)
+
+
+# ---- F9 physical input lock ----
+
+
+@mcp.tool()
+def input_lock(
+    unlock_hotkey: str = "ctrl+shift+f12",
+    allow_safe_keys: bool = True,
+    block_keyboard: bool = True,
+    block_mouse: bool = True,
+    watchdog_ms: int = 2000,
+) -> dict:
+    """Install low-level keyboard/mouse hooks that block PHYSICAL input from the user
+    while letting Gargaros' injected events through. Use during an autonomous game
+    session so the user can't accidentally type into the game window.
+
+    The unlock_hotkey is always allowed and triggers automatic unlock. Win+L,
+    Alt+F4, and Ctrl+Alt+Del are also passed through. A child watchdog process is
+    spawned that will force-kill Gargaros if it stops responding — preventing a
+    stuck-keyboard scenario if the server hangs."""
+    return _c().input_lock(
+        unlock_hotkey=unlock_hotkey,
+        allow_safe_keys=allow_safe_keys,
+        block_keyboard=block_keyboard,
+        block_mouse=block_mouse,
+        watchdog_ms=watchdog_ms,
+    )
+
+
+@mcp.tool()
+def input_unlock() -> dict:
+    """Remove the input lock and stop the watchdog. Idempotent."""
+    return _c().input_unlock()
+
+
+@mcp.tool()
+def input_lock_status() -> dict:
+    """Report whether the input lock is active and the stats (blocked physical events,
+    passed injected events, elapsed time)."""
+    return _c().input_lock_status()
 
 
 def main() -> None:

@@ -61,10 +61,34 @@ class Client:
 
     # ---- screen ----
 
-    def screenshot(self, monitor: int = 0, fmt: str = "jpeg", quality: int = 80) -> bytes:
-        r = self._http.get("/screenshot", params={"monitor": monitor, "fmt": fmt, "quality": quality})
+    def screenshot(
+        self,
+        monitor: int = 0,
+        fmt: str = "jpeg",
+        quality: int = 80,
+        raw: bool = False,
+        return_meta: bool = False,
+        bbox: tuple[int, int, int, int] | None = None,
+    ) -> bytes | tuple[bytes, dict]:
+        """Capture the screen. raw=True skips JPEG re-encode (PNG passthrough). bbox=(x1,y1,x2,y2)
+        crops to that region (useful to skip browser chrome in cloud gaming setups). return_meta=True
+        returns (bytes, {capture_time_ms, encode_time_ms, content_type})."""
+        params: dict = {"monitor": monitor, "fmt": fmt, "quality": quality}
+        if raw:
+            params["raw"] = "true"
+        if bbox is not None:
+            x1, y1, x2, y2 = bbox
+            params["bbox"] = f"{x1},{y1},{x2},{y2}"
+        r = self._http.get("/screenshot", params=params)
         r.raise_for_status()
-        return r.content
+        if not return_meta:
+            return r.content
+        meta = {
+            "capture_time_ms": int(r.headers.get("x-capture-time-ms", 0)),
+            "encode_time_ms": int(r.headers.get("x-encode-time-ms", 0)),
+            "content_type": r.headers.get("content-type", ""),
+        }
+        return r.content, meta
 
     def latest_b64(self, monitor: int = 0) -> tuple[bytes, str]:
         r = self._http.get("/latest_b64", params={"monitor": monitor})
@@ -97,8 +121,152 @@ class Client:
             to = {"x": to[0], "y": to[1]}
         self._post("/drag", {"from": src, "to": to, "button": button})
 
-    def batch(self, actions: list[dict], continue_on_error: bool = False) -> list[dict]:
-        return self._post("/batch", {"actions": actions, "continue_on_error": continue_on_error})["results"]
+    def batch(
+        self,
+        actions: list[dict],
+        continue_on_error: bool = False,
+        expect_focus: dict | None = None,
+    ) -> dict:
+        """Execute a batch of actions. Returns the full response dict
+        (total_elapsed_ms, succeeded, failed, results). expect_focus is checked
+        once at the start of the batch."""
+        body: dict[str, Any] = {"actions": actions, "continue_on_error": continue_on_error}
+        if expect_focus is not None:
+            body["expect_focus"] = expect_focus
+        return self._post("/batch", body)
+
+    # ---- gaming: held keys (F3) ----
+
+    def key_hold(
+        self,
+        name: str,
+        duration_ms: int,
+        modifiers: list[str] | None = None,
+        expect_focus: dict | None = None,
+    ) -> dict:
+        body: dict[str, Any] = {"name": name, "duration_ms": duration_ms, "modifiers": modifiers or []}
+        if expect_focus is not None:
+            body["expect_focus"] = expect_focus
+        return self._post("/key/hold", body)
+
+    def key_down(self, name: str, expect_focus: dict | None = None) -> dict:
+        body: dict[str, Any] = {"name": name}
+        if expect_focus is not None:
+            body["expect_focus"] = expect_focus
+        return self._post("/key/down", body)
+
+    def key_up(self, name: str, expect_focus: dict | None = None) -> dict:
+        body: dict[str, Any] = {"name": name}
+        if expect_focus is not None:
+            body["expect_focus"] = expect_focus
+        return self._post("/key/up", body)
+
+    def key_sequence(
+        self,
+        keys: list[dict],
+        inter_key_delay_ms: int = 30,
+        expect_focus: dict | None = None,
+    ) -> dict:
+        body: dict[str, Any] = {"keys": keys, "inter_key_delay_ms": inter_key_delay_ms}
+        if expect_focus is not None:
+            body["expect_focus"] = expect_focus
+        return self._post("/key/sequence", body)
+
+    def key_release_all(self) -> dict:
+        return self._post("/key/release_all", {})
+
+    # ---- gaming: mouse (F5) ----
+
+    def mouse_move_smooth(
+        self,
+        dx: int,
+        dy: int,
+        duration_ms: int = 200,
+        steps: int = 20,
+        mode: str = "absolute",
+        expect_focus: dict | None = None,
+    ) -> dict:
+        """Move the mouse smoothly. mode='absolute' (default) uses SetCursorPos and updates
+        the visible cursor. mode='relative' sends raw motion deltas (MOUSEEVENTF_MOVE) —
+        required for pointer-locked apps like Chrome fullscreen cloud gaming."""
+        body: dict[str, Any] = {
+            "dx": dx, "dy": dy, "duration_ms": duration_ms, "steps": steps, "mode": mode,
+        }
+        if expect_focus is not None:
+            body["expect_focus"] = expect_focus
+        return self._post("/mouse/move_smooth", body)
+
+    def mouse_button(self, button: str, action: str, expect_focus: dict | None = None) -> dict:
+        body: dict[str, Any] = {"button": button, "action": action}
+        if expect_focus is not None:
+            body["expect_focus"] = expect_focus
+        return self._post("/mouse/button", body)
+
+    def mouse_release_all(self) -> dict:
+        return self._post("/mouse/release_all", {})
+
+    # ---- gaming: global cleanup ----
+
+    def input_release_all(self) -> dict:
+        return self._post("/input/release_all", {})
+
+    # ---- F8 window management ----
+
+    def window_list(self, visible_only: bool = True) -> list[dict]:
+        r = self._http.get("/window/list", params={"visible_only": visible_only})
+        r.raise_for_status()
+        return r.json()
+
+    def window_active(self) -> dict:
+        r = self._http.get("/window/active")
+        r.raise_for_status()
+        return r.json()
+
+    def window_focus(self, selector: dict, restore_if_minimized: bool = True) -> dict:
+        return self._post(
+            "/window/focus",
+            {"selector": selector, "restore_if_minimized": restore_if_minimized},
+        )
+
+    def window_wait_for_focus(
+        self,
+        selector: dict,
+        timeout_ms: int = 5000,
+        poll_interval_ms: int = 50,
+    ) -> dict:
+        return self._post(
+            "/window/wait_for_focus",
+            {"selector": selector, "timeout_ms": timeout_ms, "poll_interval_ms": poll_interval_ms},
+        )
+
+    # ---- F9 input lock ----
+
+    def input_lock(
+        self,
+        unlock_hotkey: str = "ctrl+shift+f12",
+        allow_safe_keys: bool = True,
+        block_keyboard: bool = True,
+        block_mouse: bool = True,
+        watchdog_ms: int = 2000,
+    ) -> dict:
+        return self._post(
+            "/input/lock",
+            {
+                "unlock_hotkey": unlock_hotkey,
+                "allow_safe_keys": allow_safe_keys,
+                "block_keyboard": block_keyboard,
+                "block_mouse": block_mouse,
+                "watchdog_ms": watchdog_ms,
+            },
+        )
+
+    def input_unlock(self) -> dict:
+        return self._post("/input/unlock", {})
+
+    def input_lock_status(self) -> dict:
+        r = self._http.get("/input/lock_status")
+        r.raise_for_status()
+        return r.json()
 
     # ---- ui ----
 
