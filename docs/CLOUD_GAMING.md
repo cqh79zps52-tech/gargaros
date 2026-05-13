@@ -40,18 +40,59 @@ The two implications that matter for Gargaros:
 
 ## Smoke test
 
-With the setup above, run:
+The v2 smoke test (`scripts/smoke_test_cloud_v2.py`) wraps everything:
 
 ```powershell
-python scripts/smoke_test_cloud.py
+python scripts/smoke_test_cloud_v2.py
 ```
 
-The script (CDC annex) does: health check → full screenshot → bbox screenshot → `key_hold w` →
-sprint sequence → key_sequence → `mouse_move_smooth` in **relative** mode → batch with mixed
-actions → `input_release_all`.
+What it does, in order:
 
-If the character walks, sprints, jumps, and turns the camera, Gargaros is operational for cloud
-gaming and you can hand off to the agent skill.
+1. Health check.
+2. Lists windows, finds the Chrome/xCloud window by title substring.
+3. **Focuses Chrome** via `window_focus` + `window_wait_for_focus` — no more "inputs went into the terminal" failure mode.
+4. 7-second countdown while you click in the video to activate pointer lock.
+5. **Acquires the physical input lock** (`/input/lock`). Your keyboard and mouse stop sending physical events to anything except the unlock hotkey (`ctrl+shift+f12` by default). A child watchdog process is spawned that will force-kill Gargaros if it hangs — so the keyboard can't stay jammed.
+6. Full-screen and bbox screenshots.
+7. `key_hold w` (walk) with `expect_focus` — 412 if Chrome lost focus.
+8. `mouse_move_smooth` in `mode="relative"` (camera turn).
+9. Mixed batch (turn + jump).
+10. `input_release_all` + `input_unlock` in a `finally` block — guaranteed cleanup.
+
+If the character walks, sprints, jumps, and turns the camera, Gargaros is operational.
+
+> Emergency exit: at any time during a locked session, press `ctrl+shift+f12` to unlock the keyboard manually.
+
+## Focus and input lock (F8 + F9)
+
+The single biggest reliability issue with v1 was that inputs go to whatever has focus — if a notification stole focus mid-batch, the agent's W key would type into the system tray. v2 fixes this with two complementary primitives.
+
+**F8 — Window focus.** Before any session, focus the target window explicitly and verify it:
+
+```python
+g.window_focus(selector={"title_contains": "Xbox"}, restore_if_minimized=True)
+g.window_wait_for_focus(selector={"title_contains": "Xbox"}, timeout_ms=2000)
+```
+
+Pass `expect_focus={"hwnd": ...}` (or any selector) to any input call to make it abort with HTTP 412 if focus moved:
+
+```python
+g.key_hold("w", 1500, expect_focus={"hwnd": xbox_hwnd})  # 412 if Chrome lost focus
+```
+
+**F9 — Physical input lock.** Once the session is set up, block the user's keyboard/mouse so they can't fight the agent:
+
+```python
+g.input_lock(unlock_hotkey="ctrl+shift+f12")
+try:
+    # ... your game loop. Injected events pass; physical events are dropped.
+finally:
+    g.input_unlock()
+```
+
+The watchdog (spawned as a separate Python process) pings `/input/lock_status` every 500 ms. If the Gargaros server stops responding for longer than `watchdog_ms` (default 2000), the watchdog `TerminateProcess`es Gargaros. Killing the process drops the hooks, so the keyboard returns to normal even after a hard crash. Section 4 of `gargaros_fortnite_cloud_cdc_v2.pdf` for the rationale.
+
+Safe keys allowed by default during a lock: `Ctrl+Alt+Del` (Windows handles this above any user hook), `Win+L` (session lock), `Alt+F4` (close window).
 
 ## SDK usage patterns
 

@@ -1,5 +1,54 @@
 # Changelog
 
+## v0.5.0 — Fortnite Cloud Gaming v2: window focus + physical input lock
+
+Per `gargaros_fortnite_cloud_cdc_v2.pdf`. Adds the two reliability primitives the v1
+smoke test was missing: window focus management (so inputs go to Chrome, not the
+terminal) and the physical input lock with watchdog (so the user can't fight the
+agent and the keyboard can't stay stuck after a crash).
+
+### Added
+
+- **F8 — Window focus management.**
+  - `GET /window/list`, `GET /window/active`, `POST /window/focus`, `POST /window/wait_for_focus`.
+  - Selectors: `title_contains`, `title_regex`, `process_name`, `hwnd` (combinable, AND).
+  - `SetForegroundWindow` uses the `AttachThreadInput` workaround for reliability.
+  - **`expect_focus` parameter** added to every input endpoint (`click`, `key`, `key_hold`,
+    `key_down`, `key_up`, `key_sequence`, `mouse_move_smooth`, `mouse_button`, `batch`).
+    Returns HTTP 412 (Precondition Failed) if the foreground window doesn't match, *without*
+    sending the input.
+
+- **F9 — Physical input lock.**
+  - `POST /input/lock`, `POST /input/unlock`, `GET /input/lock_status`.
+  - Installs `WH_KEYBOARD_LL` + `WH_MOUSE_LL` low-level hooks on a dedicated thread with a
+    message loop. Filters by `LLKHF_INJECTED` / `LLMHF_INJECTED` — Gargaros' own SendInput
+    events pass, physical events are dropped (return 1 to Windows).
+  - Configurable unlock hotkey (default `ctrl+shift+f12`).
+  - Safe-keys allowlist: `Win+L`, `Alt+F4` (when `allow_safe_keys=true`, default).
+    `Ctrl+Alt+Del` is intercepted by Windows above any user-mode hook anyway.
+  - **Watchdog child process** (`python -m gargaros.watchdog`) spawned at lock time. Pings
+    `/input/lock_status` every 500 ms. If the server stops responding for > `watchdog_ms`
+    (default 2000), the watchdog `TerminateProcess`es Gargaros — hooks fall with the process.
+  - Lifespan shutdown drops the lock if still held (last-resort safety).
+  - SDK: `Client.input_lock(...)`, `input_unlock()`, `input_lock_status()`,
+    `window_list/active/focus/wait_for_focus`. `expect_focus=` on every input method.
+
+- MCP integration: new tools `window_list`, `window_active`, `window_focus`,
+  `window_wait_for_focus`, `input_lock`, `input_unlock`, `input_lock_status`. Descriptions
+  explain when to use each, e.g. lock should wrap an agent's game loop, focus should run
+  before any input batch.
+- New modules: `src/gargaros/window_driver.py`, `src/gargaros/input_lock.py`,
+  `src/gargaros/watchdog.py`, `src/gargaros/routes/window.py`,
+  `src/gargaros/routes/input_lock.py`.
+- New tests (51 total): `test_window_list`, `test_window_focus`, `test_expect_focus`,
+  `test_input_lock_basic`, `test_input_lock_injected_pass`, `test_input_lock_hotkey`,
+  `test_input_lock_safe_keys`, `test_input_lock_watchdog`.
+- New smoke test: `scripts/smoke_test_cloud_v2.py` per CDC section 9.
+
+### Changed
+
+- Bump version 0.4.0 → 0.5.0.
+
 ## v0.4.0 — Fortnite Cloud Gaming ready
 
 Per `gargaros_fortnite_cloud_cdc.pdf`. Brings the input primitives needed to drive a cloud-streamed
