@@ -23,6 +23,16 @@ def test_mcp_server_imports_and_registers_tools():
         "browser_type",
         "browser_navigate",
         "browser_tabs",
+        # Gaming primitives (F3-F5)
+        "key_hold",
+        "key_down",
+        "key_up",
+        "key_sequence",
+        "key_release_all",
+        "mouse_move_smooth",
+        "mouse_button",
+        "mouse_release_all",
+        "input_release_all",
     }
     # FastMCP exposes its registry via a private attribute that has shifted across versions —
     # try a few accessor patterns and assert at least one yields the expected set.

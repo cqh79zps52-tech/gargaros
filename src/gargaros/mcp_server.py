@@ -47,9 +47,16 @@ def health() -> dict:
 
 
 @mcp.tool()
-def screenshot(monitor: int = 0) -> str:
-    """Capture a JPEG screenshot of the current desktop. Returns base64-encoded bytes."""
-    return base64.b64encode(_c().screenshot(monitor=monitor)).decode("ascii")
+def screenshot(
+    monitor: int = 0,
+    raw: bool = False,
+    bbox: list[int] | None = None,
+) -> str:
+    """Capture a screenshot. Default returns JPEG (smaller); set raw=True for PNG without Pillow
+    re-encoding (~40% faster, larger output). bbox=[x1,y1,x2,y2] crops to a region — useful to
+    isolate the cloud-gaming video stream from the browser chrome. Returns base64-encoded bytes."""
+    rect = tuple(bbox) if bbox else None  # type: ignore[arg-type]
+    return base64.b64encode(_c().screenshot(monitor=monitor, raw=raw, bbox=rect)).decode("ascii")
 
 
 @mcp.tool()
@@ -155,6 +162,84 @@ def browser_navigate(url: str, tab_id: int | None = None, wait_for_load: bool = 
 def browser_tabs() -> list[dict]:
     """List currently open browser tabs."""
     return _c().browser_tabs()
+
+
+# ---- Gaming primitives (F3-F5) ----
+
+
+@mcp.tool()
+def key_hold(name: str, duration_ms: int, modifiers: list[str] | None = None) -> dict:
+    """Press and hold a key for `duration_ms`, then release. Use this when you need a held
+    input (walking forward in a game with W, sprinting with Shift, charging an attack).
+    Don't use for single taps — use `key` instead. Don't use for sequences — use `key_sequence`."""
+    return _c().key_hold(name, duration_ms, modifiers=modifiers)
+
+
+@mcp.tool()
+def key_down(name: str) -> dict:
+    """Press a key down without releasing it. You MUST pair this with a later `key_up` or
+    `input_release_all`, otherwise the key stays stuck. Prefer `key_hold` for time-bounded holds."""
+    return _c().key_down(name)
+
+
+@mcp.tool()
+def key_up(name: str) -> dict:
+    """Release a previously-held key. Idempotent — calling on a key that isn't down returns 200
+    with a warning, not an error."""
+    return _c().key_up(name)
+
+
+@mcp.tool()
+def key_sequence(keys: list[dict], inter_key_delay_ms: int = 30) -> dict:
+    """Execute a sequence of timed key presses, e.g. avance+saute+avance.
+    `keys` is a list of {"name": "w", "hold_ms": 800}. Use this for combos that are tighter
+    than what a batch of key_hold calls would give. Always cleans up — no stuck keys on error."""
+    return _c().key_sequence(keys, inter_key_delay_ms=inter_key_delay_ms)
+
+
+@mcp.tool()
+def key_release_all() -> dict:
+    """Release every currently-held key AND mouse button (alias of input_release_all).
+    Call this as a safety net if you ever doubt the input state."""
+    return _c().key_release_all()
+
+
+@mcp.tool()
+def mouse_move_smooth(
+    dx: int,
+    dy: int,
+    duration_ms: int = 200,
+    steps: int = 20,
+    mode: str = "absolute",
+) -> dict:
+    """Move the mouse smoothly over time. Use mode='relative' when the application has captured
+    the pointer (fullscreen games, including cloud gaming streams with pointer lock — Chrome on
+    xbox.com/play). Use mode='absolute' (default) for normal desktop interactions where the
+    visible cursor should move to a new position. dx/dy are pixels in absolute mode, mickeys
+    (raw motion deltas) in relative mode. The duration is split into 'steps' smaller movements
+    to avoid teleporting the camera."""
+    return _c().mouse_move_smooth(dx, dy, duration_ms=duration_ms, steps=steps, mode=mode)
+
+
+@mcp.tool()
+def mouse_button(button: str, action: str) -> dict:
+    """Press or release a mouse button. button: left/right/middle. action: down/up.
+    Use for held interactions like right-click to ADS in shooters. State is tracked so the
+    button is released on server shutdown."""
+    return _c().mouse_button(button, action)
+
+
+@mcp.tool()
+def mouse_release_all() -> dict:
+    """Release every currently-held mouse button."""
+    return _c().mouse_release_all()
+
+
+@mcp.tool()
+def input_release_all() -> dict:
+    """Release every held key and mouse button. The big red button for cleanup —
+    call when something feels stuck."""
+    return _c().input_release_all()
 
 
 def main() -> None:
