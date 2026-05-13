@@ -94,6 +94,8 @@ The watchdog (spawned as a separate Python process) pings `/input/lock_status` e
 
 Safe keys allowed by default during a lock: `Ctrl+Alt+Del` (Windows handles this above any user hook), `Win+L` (session lock), `Alt+F4` (close window).
 
+> **Known WH_KEYBOARD_LL limitation:** some gaming keyboard drivers (Razer Synapse, Logitech G HUB, SteelSeries Engine, certain mechanical-keyboard firmwares with macro support) inject events at a level below `WH_KEYBOARD_LL`. On those setups, our hook will report `blocked_kb_events = 0` even when the user is actively typing — the keyboard hook is bypassed by the driver. The mouse hook and our own injected events (the agent's `SendInput`) are unaffected. If you need strict keyboard blocking on a system with such a driver, consider disabling the driver's macro/intercept feature for the duration of a session, or running Gargaros via the Interception driver (out of scope for v0.5).
+
 ## SDK usage patterns
 
 ```python

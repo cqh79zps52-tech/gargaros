@@ -30,9 +30,35 @@ logger = logging.getLogger(__name__)
 
 _PLATFORM_WIN = sys.platform == "win32"
 
+# LRESULT is LONG_PTR on x64 (8 bytes), not c_long (4 bytes). Without this fix
+# the hook proc's return value gets truncated and Windows silently uninstalls
+# the hook — passed/blocked counters stay at 0 because the hook is dead.
+LRESULT = ctypes.c_ssize_t
+HHOOK = ctypes.c_void_p
+HINSTANCE = ctypes.c_void_p
+
 if _PLATFORM_WIN:
     _user32 = ctypes.windll.user32
     _kernel32 = ctypes.windll.kernel32
+
+    # Pin argtypes/restype so pointer-sized values aren't truncated on x64.
+    _user32.SetWindowsHookExW.argtypes = [ctypes.c_int, ctypes.c_void_p, HINSTANCE, wintypes.DWORD]
+    _user32.SetWindowsHookExW.restype = HHOOK
+    _user32.UnhookWindowsHookEx.argtypes = [HHOOK]
+    _user32.UnhookWindowsHookEx.restype = wintypes.BOOL
+    _user32.CallNextHookEx.argtypes = [HHOOK, ctypes.c_int, wintypes.WPARAM, wintypes.LPARAM]
+    _user32.CallNextHookEx.restype = LRESULT
+    _user32.GetMessageW.argtypes = [ctypes.c_void_p, wintypes.HWND, wintypes.UINT, wintypes.UINT]
+    _user32.GetMessageW.restype = wintypes.BOOL
+    _user32.TranslateMessage.argtypes = [ctypes.c_void_p]
+    _user32.TranslateMessage.restype = wintypes.BOOL
+    _user32.DispatchMessageW.argtypes = [ctypes.c_void_p]
+    _user32.DispatchMessageW.restype = LRESULT
+    _user32.PostThreadMessageW.argtypes = [wintypes.DWORD, wintypes.UINT, wintypes.WPARAM, wintypes.LPARAM]
+    _user32.PostThreadMessageW.restype = wintypes.BOOL
+    _kernel32.GetModuleHandleW.argtypes = [wintypes.LPCWSTR]
+    _kernel32.GetModuleHandleW.restype = HINSTANCE
+    _kernel32.GetCurrentThreadId.restype = wintypes.DWORD
 else:
     _user32 = None
     _kernel32 = None
@@ -78,7 +104,7 @@ class MSLLHOOKSTRUCT(ctypes.Structure):
     ]
 
 
-HOOKPROC = ctypes.WINFUNCTYPE(ctypes.c_long, ctypes.c_int, wintypes.WPARAM, wintypes.LPARAM)
+HOOKPROC = ctypes.WINFUNCTYPE(LRESULT, ctypes.c_int, wintypes.WPARAM, wintypes.LPARAM)
 
 
 # ---- monkey-patchable Win32 hooks (for tests) ----
@@ -106,20 +132,26 @@ def _real_call_next_hook(handle: int, n_code: int, wparam: int, lparam: int) -> 
 
 
 def _real_run_message_loop(stop_check: Callable[[], bool]) -> None:
+    """Blocking GetMessageW loop — required for WH_KEYBOARD_LL.
+
+    Low-level hooks dispatch their callbacks via the installing thread's message
+    queue. The thread must be in GetMessageW (or equivalent wait-state) for the
+    OS to deliver them — a PeekMessageW + sleep(10ms) loop is too laggy and the
+    OS's 300ms LowLevelHooksTimeout silently uninstalls the hook.
+
+    To exit the loop, the manager PostThreadMessageW's WM_QUIT to this thread.
+    """
     if _user32 is None:
         return
     msg = wintypes.MSG()
-    while not stop_check():
-        # PeekMessageW with PM_REMOVE=1 to drain queued messages without blocking forever.
-        # Mix in a short sleep so the thread doesn't spin.
-        got = _user32.PeekMessageW(ctypes.byref(msg), 0, 0, 0, 1)
-        if got:
-            if msg.message == WM_QUIT:
-                return
-            _user32.TranslateMessage(ctypes.byref(msg))
-            _user32.DispatchMessageW(ctypes.byref(msg))
-        else:
-            time.sleep(0.01)
+    while True:
+        ret = _user32.GetMessageW(ctypes.byref(msg), 0, 0, 0)
+        if ret == 0 or ret == -1:  # WM_QUIT or error
+            return
+        if stop_check():
+            return
+        _user32.TranslateMessage(ctypes.byref(msg))
+        _user32.DispatchMessageW(ctypes.byref(msg))
 
 
 _set_windows_hook = _real_set_windows_hook
@@ -187,8 +219,14 @@ class InputLock:
         self.watchdog_ms: int = 2000
         self.blocked_physical_events: int = 0
         self.passed_injected_events: int = 0
+        self.blocked_kb_events: int = 0
+        self.blocked_mouse_events: int = 0
+        self.passed_kb_injected: int = 0
+        self.passed_mouse_injected: int = 0
+        self._sample_blocked_kb: list[dict] = []  # last few blocked keys for debug
         self._held_vks: set[int] = set()
         self._hook_thread: threading.Thread | None = None
+        self._hook_thread_id: int = 0
         self._stop_event = threading.Event()
         self._kb_proc_ref: Any = None
         self._mouse_proc_ref: Any = None
@@ -272,6 +310,11 @@ class InputLock:
             "unlock_hotkey": self.unlock_hotkey,
             "blocked_physical_events": self.blocked_physical_events,
             "passed_injected_events": self.passed_injected_events,
+            "blocked_kb_events": self.blocked_kb_events,
+            "blocked_mouse_events": self.blocked_mouse_events,
+            "passed_kb_injected": self.passed_kb_injected,
+            "passed_mouse_injected": self.passed_mouse_injected,
+            "sample_blocked_kb": list(self._sample_blocked_kb),
         }
 
     # ---- hook thread ----
@@ -290,6 +333,9 @@ class InputLock:
 
     def _hook_thread_main(self) -> None:
         try:
+            # Capture our thread id so the manager can PostThreadMessage WM_QUIT us.
+            if _kernel32:
+                self._hook_thread_id = _kernel32.GetCurrentThreadId()
             hmod = _kernel32.GetModuleHandleW(None) if _kernel32 else 0
             if self.block_keyboard:
                 self._kb_handle = _set_windows_hook(WH_KEYBOARD_LL, self._kb_proc_ref, hmod, 0)
@@ -314,9 +360,16 @@ class InputLock:
 
     def _stop_hook_thread(self) -> None:
         self._stop_event.set()
+        # Kick the blocking GetMessageW so the thread can exit.
+        if _user32 and self._hook_thread_id:
+            try:
+                _user32.PostThreadMessageW(self._hook_thread_id, WM_QUIT, 0, 0)
+            except Exception:
+                logger.exception("PostThreadMessageW WM_QUIT failed")
         if self._hook_thread:
             self._hook_thread.join(timeout=2.0)
             self._hook_thread = None
+        self._hook_thread_id = 0
 
     # ---- hook callbacks ----
 
@@ -325,15 +378,22 @@ class InputLock:
             return _call_next_hook(self._kb_handle, n_code, wparam, lparam)
         try:
             kb = ctypes.cast(lparam, ctypes.POINTER(KBDLLHOOKSTRUCT)).contents
-            decision = self._classify_kb(int(kb.vkCode), int(kb.flags), int(wparam))
+            vk = int(kb.vkCode)
+            flags = int(kb.flags)
+            decision = self._classify_kb(vk, flags, int(wparam))
         except Exception:
             logger.exception("kb hook proc raised — passing through to avoid system lockout")
             return _call_next_hook(self._kb_handle, n_code, wparam, lparam)
         if decision == "block":
             self.blocked_physical_events += 1
+            self.blocked_kb_events += 1
+            # Keep a short sample for diagnostics.
+            if len(self._sample_blocked_kb) < 10:
+                self._sample_blocked_kb.append({"vk": vk, "flags": flags, "wparam": int(wparam)})
             return 1
         if decision == "injected":
             self.passed_injected_events += 1
+            self.passed_kb_injected += 1
         return _call_next_hook(self._kb_handle, n_code, wparam, lparam)
 
     def _mouse_proc(self, n_code: int, wparam: int, lparam: int) -> int:
@@ -347,8 +407,10 @@ class InputLock:
             return _call_next_hook(self._mouse_handle, n_code, wparam, lparam)
         if is_injected:
             self.passed_injected_events += 1
+            self.passed_mouse_injected += 1
             return _call_next_hook(self._mouse_handle, n_code, wparam, lparam)
         self.blocked_physical_events += 1
+        self.blocked_mouse_events += 1
         return 1
 
     def _classify_kb(self, vk: int, flags: int, wparam: int) -> str:

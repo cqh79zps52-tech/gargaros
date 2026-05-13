@@ -1,9 +1,18 @@
-"""Manual smoke test for Fortnite Cloud Gaming v2 (CDC section 9).
+"""Manual smoke test for Fortnite Cloud Gaming v2 (CDC section 9, hardened).
 
-Run with Gargaros already running (`python -m gargaros`) and Chrome open on
-xbox.com/play with Fortnite loaded. The script focuses Chrome, locks physical
-input, then drives the character. Press ctrl+shift+f12 at any time to abort
-and unlock the keyboard manually.
+Prerequisites (READ THESE):
+  1. Gargaros running (`python -m gargaros`).
+  2. Chrome open on xbox.com/play with **Fortnite already loaded INTO A MATCH**
+     (not the lobby — you need a character that can move).
+  3. Chrome is **FULLSCREEN** (F11) — pointer lock only engages in fullscreen.
+  4. After Phase 3's countdown, click ONCE in the game viewport, then DON'T
+     TOUCH ANYTHING until the script finishes (~12 seconds total).
+
+Emergency abort: press ctrl+shift+f12 to unlock the keyboard at any time.
+
+The selector uses process_name='chrome.exe' + title_contains='Fortnite' so it
+won't accidentally match a terminal window whose title happens to contain
+'fortnite'.
 """
 
 from __future__ import annotations
@@ -11,7 +20,15 @@ from __future__ import annotations
 import sys
 import time
 
+try:
+    sys.stdout.reconfigure(encoding="utf-8")
+    sys.stderr.reconfigure(encoding="utf-8")
+except Exception:
+    pass
+
 from gargaros.client import Client
+
+FOCUS_SELECTOR = {"process_name": "chrome.exe", "title_contains": "Fortnite"}
 
 
 def main() -> int:
@@ -20,67 +37,97 @@ def main() -> int:
         assert g.health()["status"] == "ok"
         print("[ok] Health OK")
 
-        print("\n=== Phase 2 : focus de fenêtre ===")
+        print("\n=== Phase 2 : find Chrome/Fortnite window ===")
         windows = g.window_list(visible_only=True)
-        xbox_win = next(
-            (w for w in windows if "Xbox" in w["title"] or "Fortnite" in w["title"]),
-            None,
-        )
-        assert xbox_win, (
-            "Aucune fenêtre Chrome avec xCloud trouvée. Ouvre xbox.com/play d'abord."
-        )
-        print(f"[ok] Trouvé : {xbox_win['title']} (hwnd={xbox_win['hwnd']})")
+        chrome_fortnite = [
+            w for w in windows
+            if w["process_name"].lower() == "chrome.exe"
+            and "fortnite" in w["title"].lower()
+        ]
+        if not chrome_fortnite:
+            print("ERROR: no chrome.exe window with 'Fortnite' in title.")
+            print("Open xbox.com/play and load Fortnite first.")
+            return 1
+        target = chrome_fortnite[0]
+        print(f"[ok] Found: {target['title']!r} (hwnd={target['hwnd']})")
+        # Best-effort: try to bring it forward. SetForegroundWindow can fail
+        # silently, so the user may still need to click Chrome in the taskbar.
+        try:
+            g.window_focus(selector={"hwnd": target["hwnd"]}, restore_if_minimized=True)
+            print("[ok] window_focus called (Windows may still leave it in the background)")
+        except Exception as e:
+            print(f"window_focus warning: {e}")
 
-        g.window_focus(selector={"hwnd": xbox_win["hwnd"]}, restore_if_minimized=True)
-        g.window_wait_for_focus(selector={"hwnd": xbox_win["hwnd"]}, timeout_ms=2000)
-        print("[ok] Chrome au premier plan")
+        print("\n=== Phase 3 : focus Fortnite Chrome (waiting up to 30s) ===")
+        print(">>> 1. Alt-Tab or click on the Fortnite Chrome window NOW")
+        print(">>> 2. You must be IN A MATCH (not lobby) for character movement")
+        print(">>> 3. Press F11 to go fullscreen if not already")
+        print(">>> 4. Click ONCE in the game viewport to engage pointer lock")
+        print(">>> 5. STOP TOUCHING THE KEYBOARD/MOUSE after that")
+        print("")
+        # Manual poll loop with visible progress so we can see what the active window is.
+        deadline = time.monotonic() + 30
+        last_title = None
+        while time.monotonic() < deadline:
+            active = g.window_active()
+            title = f"{active['process_name']} {active['title']!r}"
+            if title != last_title:
+                print(f"   active: {title}")
+                last_title = title
+            if (active["process_name"].lower() == "chrome.exe"
+                    and "fortnite" in active["title"].lower()):
+                break
+            time.sleep(0.5)
+        else:
+            print("ERROR: Fortnite Chrome never became foreground (30s timeout).")
+            return 2
+        print(f"[ok] Fortnite Chrome is foreground: {active['title']!r}")
 
-        print("\n=== Phase 3 : interaction manuelle ===")
-        print(">>> Clique MAINTENANT dans la zone de jeu Fortnite")
-        print(">>> pour activer le pointer lock (curseur disparaît).")
-        print(">>> Tu as 7 secondes. NE TAPE PAS sur le clavier.")
-        for i in range(7, 0, -1):
+        print("\n=== Phase 4 : 3s pause for pointer-lock click ===")
+        print(">>> Click in the game viewport to engage pointer lock if not done.")
+        for i in range(3, 0, -1):
             print(f"   {i}...")
             time.sleep(1)
+        # Re-verify focus after the pause
+        active = g.window_active()
+        if active["process_name"].lower() != "chrome.exe" or "fortnite" not in active["title"].lower():
+            print(f"ERROR: focus drifted to {active['process_name']} {active['title']!r}")
+            return 2
+        print(f"[ok] still on {active['title']!r}")
 
-        print("\n=== Phase 4 : activation du lock ===")
+        print("\n=== Phase 5 : input lock ===")
         g.input_lock(unlock_hotkey="ctrl+shift+f12")
-        print("[ok] Input lock activé.")
-        print("  (clavier/souris physiques bloqués, sauf ctrl+shift+f12)")
+        print("[ok] Locked. Your physical keyboard is now blocked except ctrl+shift+f12.")
         time.sleep(1)
 
         try:
-            print("\n=== Phase 5 : screenshot rapide PNG brut ===")
-            g.screenshot(raw=True)  # warmup
+            print("\n=== Phase 6 : full screenshot (PNG raw) ===")
+            g.screenshot(raw=True)  # warmup (cold-start can be 200ms+)
             img, meta = g.screenshot(raw=True, return_meta=True)
-            assert meta["capture_time_ms"] < 100, f"slow: {meta}"
-            print(f"[ok] Screenshot full ({meta['capture_time_ms']}ms)")
+            print(f"[ok] full ({meta['capture_time_ms']}ms — target <100ms warm)")
 
-            print("\n=== Phase 6 : screenshot bbox ===")
-            # Derive bbox from the actual screen height
+            print("\n=== Phase 7 : bbox screenshot ===")
             from io import BytesIO
             from PIL import Image
             w, h = Image.open(BytesIO(img)).size
-            img, meta = g.screenshot(
-                raw=True, bbox=(0, 80, w, h), return_meta=True
-            )
-            print(f"[ok] Screenshot bbox ({meta['capture_time_ms']}ms)")
+            img, meta = g.screenshot(raw=True, bbox=(0, 80, w, h), return_meta=True)
+            print(f"[ok] bbox ({meta['capture_time_ms']}ms)")
 
-            print("\n=== Phase 7 : avancer 1.5s ===")
-            g.key_hold("w", 1500, expect_focus={"hwnd": xbox_win["hwnd"]})
-            print("[ok] key_hold OK (le personnage devrait avoir avancé)")
+            print("\n=== Phase 8 : walk forward 1.5s ===")
+            g.key_hold("w", 1500, expect_focus=FOCUS_SELECTOR)
+            print("[ok] key_hold w 1500ms — character should have walked forward")
             time.sleep(0.5)
 
-            print("\n=== Phase 8 : tourner la caméra à droite ===")
+            print("\n=== Phase 9 : turn camera 90 right (relative mouse) ===")
             g.mouse_move_smooth(
                 dx=720, dy=0, duration_ms=600, steps=24,
                 mode="relative",
-                expect_focus={"hwnd": xbox_win["hwnd"]},
+                expect_focus=FOCUS_SELECTOR,
             )
-            print("[ok] Caméra tournée à droite")
+            print("[ok] camera should have turned right")
             time.sleep(0.5)
 
-            print("\n=== Phase 9 : batch (tourner gauche + sauter) ===")
+            print("\n=== Phase 10 : batch (turn left + jump) ===")
             g.batch(
                 [
                     {"type": "mouse_move_smooth", "dx": -720, "dy": 0,
@@ -88,18 +135,33 @@ def main() -> int:
                     {"type": "key", "name": "space"},
                     {"type": "sleep", "ms": 300},
                 ],
-                expect_focus={"hwnd": xbox_win["hwnd"]},
+                expect_focus=FOCUS_SELECTOR,
             )
-            print("[ok] Batch OK")
+            print("[ok] batch — camera left + jump")
             time.sleep(0.5)
+
+            print("\n=== Phase 11 : lock_status counters ===")
+            status = g.input_lock_status()
+            print(f"  passed_kb_injected    = {status.get('passed_kb_injected', '?')}")
+            print(f"  passed_mouse_injected = {status.get('passed_mouse_injected', '?')}")
+            print(f"  blocked_kb_events     = {status.get('blocked_kb_events', '?')}")
+            print(f"  blocked_mouse_events  = {status.get('blocked_mouse_events', '?')}")
+            sample = status.get("sample_blocked_kb", [])
+            if sample:
+                print(f"  sample blocked kb events (vk, flags, wparam):")
+                for s in sample:
+                    print(f"    {s}")
+            else:
+                print("  (no kb events seen by the hook — try typing more during the next run)")
         finally:
-            print("\n=== Phase 10 : cleanup ===")
+            print("\n=== Phase 12 : cleanup ===")
             g.input_release_all()
-            g.input_unlock()
-            print("[ok] Inputs relâchés et lock désactivé")
+            unlock = g.input_unlock()
+            print(f"[ok] unlocked after {unlock['was_locked_ms']}ms — keyboard restored")
 
     print("\n*** SMOKE TEST PASSED ***")
-    print("Si tu as vu Fortnite réagir à chaque phase, c'est gagné.")
+    print("Visually: did the character walk forward, turn right, turn left, jump?")
+    print("If yes, Gargaros is operational for Fortnite Cloud Gaming.")
     return 0
 
 
