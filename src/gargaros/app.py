@@ -14,6 +14,7 @@ from gargaros.backend import MCPBackend
 from gargaros.browser_bridge import BrowserBridge
 from gargaros.config import Settings, load
 from gargaros.frame_cache import FrameCache
+from gargaros.input_lock import InputLock
 from gargaros.input_state import InputState
 from gargaros.ocr import OCRCache
 from gargaros.routes.batch import batch
@@ -28,6 +29,7 @@ from gargaros.routes.browser import (
 )
 from gargaros.routes.find import find
 from gargaros.routes.input import click, drag, key, move, scroll, type_text
+from gargaros.routes.input_lock import input_lock, input_lock_status, input_unlock
 from gargaros.routes.input_meta import input_release_all
 from gargaros.routes.key_state import (
     key_down,
@@ -46,6 +48,12 @@ from gargaros.routes.ui import (
     ui_snapshot,
     ui_type_label,
 )
+from gargaros.routes.window import (
+    window_active,
+    window_focus,
+    window_list,
+    window_wait_for_focus,
+)
 from gargaros.token_store import load_or_create
 
 logger = logging.getLogger(__name__)
@@ -57,11 +65,13 @@ def build_app(
     backend: MCPBackend | None = None,
     token: str | None = None,
     input_state: InputState | None = None,
+    input_lock_instance: InputLock | None = None,
 ) -> Litestar:
     settings = settings or load()
     token = token or load_or_create(settings.token_path)
     backend = backend or MCPBackend(command=settings.mcp_command, args=settings.mcp_args)
     state = input_state or InputState(driver=input_driver)
+    lock = input_lock_instance or InputLock()
 
     @asynccontextmanager
     async def lifespan(app: Litestar):
@@ -81,6 +91,12 @@ def build_app(
             except Exception:
                 logger.exception("watchdog raised on shutdown")
             await state.release_all()
+            # F9: drop the input lock if still held so we never exit with hooks
+            # installed and a stuck keyboard.
+            try:
+                lock.release()
+            except Exception:
+                logger.exception("input_lock.release on shutdown raised")
             await backend.stop()
 
     auth_mw = DefineMiddleware(
@@ -123,6 +139,13 @@ def build_app(
             mouse_button,
             mouse_release_all,
             input_release_all,
+            window_list,
+            window_active,
+            window_focus,
+            window_wait_for_focus,
+            input_lock,
+            input_unlock,
+            input_lock_status,
         ],
         middleware=[auth_mw],
         lifespan=[lifespan],
@@ -138,4 +161,5 @@ def build_app(
     app.state.token = token
     app.state.input_state = state
     app.state.input_driver = input_driver
+    app.state.input_lock = lock
     return app
