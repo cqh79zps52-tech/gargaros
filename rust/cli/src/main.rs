@@ -9,7 +9,7 @@ use zerocopy::AsBytes;
 
 use gargaros_protocol::{
     encode_frame, ClickPayload, Flags, KeyPayload, MovePayload, Op, ScreenshotPayload,
-    ScrollPayload, StreamSubPayload,
+    ScrollPayload, StreamSubPayload, UiSnapshotPayload,
 };
 
 #[cfg(windows)]
@@ -22,7 +22,7 @@ const PIPE_NAME: &str = r"\\.\pipe\gargaros";
 
 fn usage() -> ! {
     eprintln!(
-        "usage: gargaros <command> [args]\n\n  ping\n  click <x> <y> [left|right|middle]\n  move <x> <y>\n  type <text>\n  key <vkcode>\n  scroll <dx> <dy>\n  screenshot [monitor]\n  stream <fps>"
+        "usage: gargaros <command> [args]\n\n  ping\n  click <x> <y> [left|right|middle]\n  move <x> <y>\n  type <text>\n  key <vkcode>\n  scroll <dx> <dy>\n  screenshot [monitor]\n  stream <fps>\n  ui"
     );
     std::process::exit(2);
 }
@@ -122,6 +122,36 @@ async fn run() -> Result<()> {
             client.write_all(&frame).await?;
             let (op, _seq, body) = read_one(&mut client).await?;
             eprintln!("frame received: opcode 0x{op:02X}, {} bytes", body.len());
+        }
+        "ui" => {
+            let payload = UiSnapshotPayload { flags: 0 };
+            let frame = encode_frame(Op::UiSnapshot, Flags::ACK_REQUIRED, 1, payload.as_bytes());
+            client.write_all(&frame).await?;
+            let (op, _seq, body) = read_one(&mut client).await?;
+            if op != 0xA0 {
+                return Err(anyhow!("unexpected response opcode 0x{op:02X}"));
+            }
+            // Decode UiTree body: u32 node_count, [{i64 hwnd, u16 tlen, utf8, u16 dlen, utf8}]
+            if body.len() < 4 {
+                return Err(anyhow!("short ui_tree body"));
+            }
+            let nc = u32::from_le_bytes([body[0], body[1], body[2], body[3]]);
+            if nc < 1 {
+                println!("focus hwnd=0 title=\"\" dialog=<none>");
+            } else {
+                let mut off = 4usize;
+                let hwnd = i64::from_le_bytes(body[off..off + 8].try_into()?);
+                off += 8;
+                let tlen = u16::from_le_bytes([body[off], body[off + 1]]) as usize;
+                off += 2;
+                let title = std::str::from_utf8(&body[off..off + tlen])?.to_owned();
+                off += tlen;
+                let dlen = u16::from_le_bytes([body[off], body[off + 1]]) as usize;
+                off += 2;
+                let dialog = std::str::from_utf8(&body[off..off + dlen])?.to_owned();
+                let dialog_str = if dialog.is_empty() { "<none>".to_string() } else { format!("\"{dialog}\"") };
+                println!("focus hwnd={hwnd} title=\"{title}\" dialog={dialog_str}");
+            }
         }
         "stream" => {
             let fps: u8 = args.get(1).and_then(|s| s.parse().ok()).unwrap_or(10);

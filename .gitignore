@@ -24,3 +24,6 @@ Thumbs.db
 # Local
 *.log
 .env
+
+# Installed binaries (deployed via scripts/install.ps1 from rust/target/release/)
+/bin/
