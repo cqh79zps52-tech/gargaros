@@ -1,0 +1,21 @@
+[package]
+name = "gargaros-protocol"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+description = "Wire format and opcodes for the Gargaros binary protocol."
+
+[lib]
+path = "src/lib.rs"
+
+[features]
+default = ["std"]
+std = []
+
+[dependencies]
+zerocopy.workspace = true
+bitflags.workspace = true
+thiserror = { workspace = true, optional = true }
+
+[dev-dependencies]

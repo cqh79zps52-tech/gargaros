@@ -1,8 +1,20 @@
 # Gargaros
 
-Open-source local HTTP control surface for AI agents on Windows.
+Open-source local control surface for AI agents on Windows.
 
-Gargaros gives AI agents a fast, authenticated HTTP API to take screenshots, click, type, and otherwise control a Windows desktop. It is an MIT-licensed, eyehands-compatible alternative built as a thin gateway in front of [`Windows-MCP`](https://github.com/CursorTouch/Windows-MCP), which does the heavy lifting (DXcam capture, SendInput, UI Automation).
+Two implementations coexist in this repo:
+
+- **Python HTTP server (v0.5.x, `src/gargaros/`)** — the original surface, a
+  thin gateway in front of [`Windows-MCP`](https://github.com/CursorTouch/Windows-MCP).
+  HTTP/JSON, ~15 ms click latency, ~130 ms screenshots.
+- **Rust core + Named-Pipe binary protocol (v0.6.x, `rust/` + `client-ts/`)** —
+  the radical-plan rewrite. Single native process, lock-free input queue,
+  shared-memory ring buffer for zero-copy frames, streaming state to Claude
+  Code so the agent never has to call `screenshot` explicitly. Targets
+  sub-millisecond click latency. See `docs/RADICAL_PLAN.md`.
+
+The Rust path is the future; the Python server stays around for clients that
+still want the HTTP API.
 
 ## What's different from upstream eyehands
 

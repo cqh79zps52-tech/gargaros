@@ -1,0 +1,15 @@
+[package]
+name = "gargaros-napi"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+description = "Node.js (NAPI) bindings for gargaros-core. Stub crate — implementation comes after the core stabilises."
+
+[lib]
+crate-type = ["lib"]
+path = "src/lib.rs"
+
+[dependencies]
+gargaros-core = { path = "../core" }
+gargaros-protocol = { path = "../protocol" }
