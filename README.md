@@ -111,8 +111,14 @@ How it changes the endpoints:
   `PostMessage` (no cursor) when the coordinate resolves to a hidden window, otherwise via a `SendInput`
   fallback executed on the same dedicated thread permanently attached to `agent_dsk` (`SetThreadDesktop`).
 - **Launch** (`POST /agent/launch_app` with `{cmdline}`): processes are spawned with
-  `STARTUPINFO.lpDesktop = "agent_dsk"` via `CreateProcess`. (`/ui/launch_app` still goes through
-  Windows-MCP and launches on the **visible** desktop.)
+  `STARTUPINFO.lpDesktop = "agent_dsk"` via `CreateProcess`. A bare exe name is resolved via PATH
+  and the Windows `App Paths` registry (so `chrome.exe`/`msedge.exe` work without a full path).
+  (`/ui/launch_app` still goes through Windows-MCP and launches on the **visible** desktop.)
+
+  Browser tip: a browser that's already running may forward a new window to its existing instance on
+  the visible desktop instead of spawning on `agent_dsk`. Launch with a dedicated profile (and
+  `--force-renderer-accessibility` to expose page content to UIA), e.g.:
+  `chrome.exe --new-window --force-renderer-accessibility --user-data-dir="%TEMP%\agent" "https://example.com"`.
 
 `/ui/snapshot` returns `{elements:[{label,name,control_type,bounds,center,window}], count, source:"hidden_desktop"}`.
 `/ui/click_label` and `/ui/type_label` return `{ok, method}` and **409** for an unknown label

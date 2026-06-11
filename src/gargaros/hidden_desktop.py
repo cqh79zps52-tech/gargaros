@@ -165,6 +165,12 @@ def _lparam(x: int, y: int) -> int:
 # descendant of a launched PID.
 TH32CS_SNAPPROCESS = 0x00000002
 
+# Window classes that live on every desktop but are never agent content.
+_SYSTEM_WINDOW_CLASSES = frozenset({
+    "IME", "MSCTFIME UI", "Default IME", "CicLoaderWndClass",
+    "TF_FloatingLangBar_WndTitle", "tooltips_class32",
+})
+
 
 class _PROCESSENTRY32(ctypes.Structure):
     _fields_ = [
@@ -266,6 +272,49 @@ class WindowLayout:
     top: int
     right: int
     bottom: int
+
+
+def resolve_executable(cmdline: str) -> str:
+    """Resolve a bare exe name in a command line to a full path.
+
+    CreateProcess (with lpApplicationName=None) only searches PATH/cwd, so app names that
+    live under versioned Program Files dirs (chrome.exe, msedge.exe, ...) fail. We resolve
+    the first token via PATH then the Windows "App Paths" registry, leaving the rest of the
+    command line untouched. An already-quoted/absolute first token is returned unchanged.
+    """
+    import shlex
+    import shutil
+    import subprocess
+    import winreg
+
+    cmdline = cmdline.strip()
+    if not cmdline:
+        return cmdline
+    try:
+        tokens = shlex.split(cmdline, posix=False)
+    except ValueError:
+        return cmdline
+    if not tokens:
+        return cmdline
+    exe = tokens[0].strip('"')
+    if "\\" in exe or "/" in exe or ":" in exe:
+        return cmdline  # already a path
+
+    resolved = shutil.which(exe)
+    if resolved is None:
+        name = exe if exe.lower().endswith(".exe") else exe + ".exe"
+        for root in (winreg.HKEY_CURRENT_USER, winreg.HKEY_LOCAL_MACHINE):
+            try:
+                key = winreg.OpenKey(
+                    root, rf"SOFTWARE\Microsoft\Windows\CurrentVersion\App Paths\{name}"
+                )
+                resolved, _ = winreg.QueryValueEx(key, None)
+                break
+            except OSError:
+                continue
+    if not resolved:
+        return cmdline
+    return subprocess.list2cmdline([resolved, *tokens[1:]])
 
 
 def ensure_desktop(name: str = "agent_dsk"):
@@ -371,6 +420,7 @@ class HiddenDesktop:
 
     # --- app launching ------------------------------------------------------------
     def launch(self, cmdline: str) -> int:
+        cmdline = resolve_executable(cmdline)
         si = win32process.STARTUPINFO()
         si.lpDesktop = self.name  # the key: the app is born on agent_dsk
         h_proc, h_thread, pid, _tid = win32process.CreateProcess(
@@ -393,6 +443,16 @@ class HiddenDesktop:
             _tid, pid = win32process.GetWindowThreadProcessId(hwnd)
             if pid in owned:
                 found.append(hwnd)
+                return True
+            # agent_dsk is dedicated to the agent, so any titled, reasonably sized,
+            # non-system window on it is ours too — even when a launcher re-execs and
+            # breaks the PID tree (e.g. Chrome/Edge spawn the real browser detached).
+            title = win32gui.GetWindowText(hwnd) or ""
+            cls = win32gui.GetClassName(hwnd) or ""
+            if title.strip() and cls not in _SYSTEM_WINDOW_CLASSES:
+                left, top, right, bottom = win32gui.GetWindowRect(hwnd)
+                if right - left >= 100 and bottom - top >= 100:
+                    found.append(hwnd)
             return True
 
         try:

@@ -7,7 +7,7 @@ via ``object.__new__`` and populating only the fields the method under test read
 from __future__ import annotations
 
 import gargaros.hidden_desktop as hd
-from gargaros.hidden_desktop import HiddenDesktop, WindowLayout, _lparam
+from gargaros.hidden_desktop import HiddenDesktop, WindowLayout, _lparam, resolve_executable
 
 
 def _bare(layout):
@@ -17,6 +17,24 @@ def _bare(layout):
     obj.layout = layout
     obj._layout_lock = threading.Lock()
     return obj
+
+
+def test_resolve_executable_absolute_path_passes_through():
+    cmd = r'"C:\Windows\system32\notepad.exe" --flag'
+    assert resolve_executable(cmd) == cmd
+
+
+def test_resolve_executable_resolves_bare_name_on_path():
+    # cmd.exe is always on PATH; resolution must yield a full path and keep the args.
+    out = resolve_executable("cmd.exe /c echo hi")
+    assert out.lower().endswith('echo hi') or "echo hi" in out.lower()
+    assert "\\cmd.exe" in out.lower()
+
+
+def test_resolve_executable_unknown_name_unchanged():
+    assert resolve_executable("totally_not_a_real_exe_xyz.exe --x") == (
+        "totally_not_a_real_exe_xyz.exe --x"
+    )
 
 
 def test_lparam_packs_x_low_y_high():
