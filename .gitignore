@@ -24,3 +24,5 @@ Thumbs.db
 # Local
 *.log
 .env
+gg.out
+gg.err

@@ -4,6 +4,7 @@ import base64
 import io
 import logging
 
+import anyio
 from litestar import Request, Response, get
 from PIL import Image
 
@@ -22,6 +23,22 @@ def _encode_jpeg(png_or_jpeg: bytes, quality: int) -> bytes:
 
 
 async def _capture(request: Request, monitor: int) -> bytes:
+    """Return raw image bytes (PNG/JPEG) of the current frame.
+
+    When a hidden desktop is active, capture its windows with PrintWindow and composite
+    them (monitor is ignored — the composite spans the whole virtual screen). Otherwise
+    fall back to the Windows-MCP Screenshot tool on the visible desktop.
+    """
+    hd = getattr(request.app.state, "hidden_desktop", None)
+    if hd is not None:
+        try:
+            img = await anyio.to_thread.run_sync(hd.capture_composite)
+            buf = io.BytesIO()
+            img.save(buf, format="PNG")
+            return buf.getvalue()
+        except Exception:
+            logger.exception("composite capture failed; falling back to Windows-MCP")
+
     backend = request.app.state.backend
     args: dict = {}
     if monitor is not None:

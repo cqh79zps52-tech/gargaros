@@ -3,6 +3,7 @@ from __future__ import annotations
 import logging
 from contextlib import asynccontextmanager
 
+import anyio
 from litestar import Litestar
 from litestar.config.cors import CORSConfig
 from litestar.middleware.base import DefineMiddleware
@@ -14,6 +15,7 @@ from gargaros.backend import MCPBackend
 from gargaros.browser_bridge import BrowserBridge
 from gargaros.config import Settings, load
 from gargaros.frame_cache import FrameCache
+from gargaros.hidden_desktop import HiddenDesktop
 from gargaros.ocr import OCRCache
 from gargaros.routes.batch import batch
 from gargaros.routes.browser import (
@@ -49,9 +51,20 @@ def build_app(settings: Settings | None = None, *, backend: MCPBackend | None = 
     @asynccontextmanager
     async def lifespan(app: Litestar):
         await backend.start()
+        hd: HiddenDesktop | None = None
+        if settings.hidden_desktop_enabled:
+            try:
+                hd = await anyio.to_thread.run_sync(
+                    lambda: HiddenDesktop(settings.hidden_desktop_name)
+                )
+            except Exception:
+                logger.exception("hidden desktop init failed; falling back to Windows-MCP only")
+        app.state.hidden_desktop = hd
         try:
             yield
         finally:
+            if hd is not None:
+                await anyio.to_thread.run_sync(hd.shutdown)
             await backend.stop()
 
     auth_mw = DefineMiddleware(
@@ -94,6 +107,7 @@ def build_app(settings: Settings | None = None, *, backend: MCPBackend | None = 
     )
     app.state.settings = settings
     app.state.backend = backend
+    app.state.hidden_desktop = None  # set during lifespan startup
     app.state.frame_cache = FrameCache()
     app.state.ocr_cache = OCRCache()
     app.state.browser_bridge = BrowserBridge()

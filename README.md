@@ -85,6 +85,37 @@ The first call after install downloads ~15 MB of models (cached under site-packa
 
 Every non-`/health` route requires `Authorization: Bearer <token>` AND a `Host` header of `127.0.0.1:7331` or `localhost:7331`.
 
+## Hidden secondary desktop (`agent_dsk`)
+
+By default Gargaros now drives a **hidden Windows desktop object** (`agent_dsk`, created with
+`CreateDesktop` and never shown via `SwitchDesktop`). The agent's apps live there, so its clicks,
+typing and screen captures **never move the user's cursor or steal keyboard focus** — the human can
+keep working on the visible desktop in parallel. This is native Windows isolation: same machine, no VM.
+
+How it changes the endpoints:
+
+- **Capture** (`/screenshot`, `/latest_b64`, `/find`): each `agent_dsk` window is captured with
+  `PrintWindow(PW_RENDERFULLCONTENT)` and composited onto a black canvas in absolute virtual-screen
+  coordinates — so a composite pixel `(x, y)` is the coordinate you click. ETag caching and OCR are unchanged.
+- **Coordinate input** (`/click`, `/move`, `/type`, `/scroll`, `/drag`): routed to `agent_dsk` via
+  `PostMessage` (no cursor) when the coordinate resolves to a hidden window, otherwise via a `SendInput`
+  fallback executed on a dedicated thread permanently attached to `agent_dsk` (`SetThreadDesktop`).
+- **Launch** (`/ui/launch_app`): processes are spawned with `STARTUPINFO.lpDesktop = "agent_dsk"`.
+
+Disable it (revert to driving the visible desktop through Windows-MCP) with
+`GARGAROS_HIDDEN_DESKTOP_ENABLED=0`; the desktop name is configurable via `GARGAROS_HIDDEN_DESKTOP`.
+
+**Pass-1 limitations (known, by design):**
+
+- The UIA endpoints `/ui/snapshot`, `/ui/click_label`, `/ui/type_label` and `/batch` and `/key` still
+  go through Windows-MCP on the **visible** desktop and do **not** yet see the hidden windows — a
+  dedicated UIA layer for `agent_dsk` is the next pass. Use coordinate input + `/find` against the
+  composite for now.
+- `PrintWindow` can return black for some GPU/WebGL/Chromium/Electron surfaces; fine for classic
+  desktop, web and native apps. Validate per target app.
+- `/move` with `relative=true` returns **409** on the hidden desktop (no user cursor to anchor to).
+- Coordinates are absolute virtual-screen pixels, identical to the composite image space.
+
 ## Security notes
 
 - Listens on `127.0.0.1` only. Never bind `0.0.0.0`.

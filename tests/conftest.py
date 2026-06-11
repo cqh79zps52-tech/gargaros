@@ -71,7 +71,8 @@ def fake_backend() -> FakeBackend:
 
 @pytest.fixture
 def settings(tmp_path: Path) -> Settings:
-    return Settings(token_path=tmp_path / "token")
+    # Disable the real hidden desktop so route tests exercise the Windows-MCP backend path.
+    return Settings(token_path=tmp_path / "token", hidden_desktop_enabled=False)
 
 
 @pytest.fixture
