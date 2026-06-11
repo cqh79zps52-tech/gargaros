@@ -55,18 +55,21 @@ Full OpenAPI schema: `http://127.0.0.1:7331/schema`.
 | POST | `/drag` | `{from:{x,y},to:{x,y},button}` |
 | POST | `/batch` | `{actions:[...],continue_on_error}` (max 100) |
 
-### UI Automation (Phase 2)
+### UI Automation
+
+When the hidden desktop is active these target `agent_dsk` via UIA (zero cursor); otherwise they
+fall back to Windows-MCP on the visible desktop.
 
 | Method | Path | Body |
 |---|---|---|
-| POST | `/ui/snapshot` | `{use_vision,use_ui_tree,use_annotation,...}` — labeled UI tree |
-| POST | `/ui/click_label` | `{label,button,double}` — click element by label id from a recent snapshot |
+| POST | `/ui/snapshot` | `{}` (hidden desktop) — labeled interactive controls of `agent_dsk` windows |
+| POST | `/ui/click_label` | `{label}` — act on element by label id from a recent snapshot |
 | POST | `/ui/type_label` | `{label,text,clear,press_enter}` |
-| POST | `/ui/scrape` | `{url,query}` — open a URL and extract content |
+| POST | `/ui/scrape` | `{url,query}` — open a URL and extract content (Windows-MCP) |
 | POST | `/ui/launch_app` | `{name,mode}` — launch/switch/resize an app on the visible desktop |
 | POST | `/agent/launch_app` | `{cmdline}` — launch a process on the hidden desktop (`agent_dsk`) |
 
-`ui_click_label` and `ui_type_label` return **409** if no recent `/ui/snapshot` has been taken — call snapshot first to populate the desktop state.
+`ui_click_label` and `ui_type_label` return **409** for an unknown label — call `/ui/snapshot` first.
 
 ### OCR (Phase 2)
 
@@ -98,24 +101,33 @@ How it changes the endpoints:
 - **Capture** (`/screenshot`, `/latest_b64`, `/find`): each `agent_dsk` window is captured with
   `PrintWindow(PW_RENDERFULLCONTENT)` and composited onto a black canvas in absolute virtual-screen
   coordinates — so a composite pixel `(x, y)` is the coordinate you click. ETag caching and OCR are unchanged.
+- **UIA — recommended, zero cursor** (`/ui/snapshot`, `/ui/click_label`, `/ui/type_label`): a
+  dedicated UI-Automation layer enumerates the interactive controls of every `agent_dsk` window
+  (`ControlFromHandle` works cross-desktop), labels them, and acts via UIA patterns
+  (`Invoke`/`Toggle`/`SelectionItem`/`ExpandCollapse`/`LegacyIAccessible`, with a `PostMessage`
+  fallback) and focus-scoped keystrokes for text — no mouse, no cursor. UIA runs on a dedicated
+  MTA, desktop-attached worker thread.
 - **Coordinate input** (`/click`, `/move`, `/type`, `/scroll`, `/drag`): routed to `agent_dsk` via
   `PostMessage` (no cursor) when the coordinate resolves to a hidden window, otherwise via a `SendInput`
-  fallback executed on a dedicated thread permanently attached to `agent_dsk` (`SetThreadDesktop`).
+  fallback executed on the same dedicated thread permanently attached to `agent_dsk` (`SetThreadDesktop`).
 - **Launch** (`POST /agent/launch_app` with `{cmdline}`): processes are spawned with
   `STARTUPINFO.lpDesktop = "agent_dsk"` via `CreateProcess`. (`/ui/launch_app` still goes through
   Windows-MCP and launches on the **visible** desktop.)
 
-Disable it (revert to driving the visible desktop through Windows-MCP) with
+`/ui/snapshot` returns `{elements:[{label,name,control_type,bounds,center,window}], count, source:"hidden_desktop"}`.
+`/ui/click_label` and `/ui/type_label` return `{ok, method}` and **409** for an unknown label
+(call `/ui/snapshot` first).
+
+Disable the whole layer (revert to driving the visible desktop through Windows-MCP) with
 `GARGAROS_HIDDEN_DESKTOP_ENABLED=0`; the desktop name is configurable via `GARGAROS_HIDDEN_DESKTOP`.
 
-**Pass-1 limitations (known, by design):**
+**Known limitations:**
 
-- The UIA endpoints `/ui/snapshot`, `/ui/click_label`, `/ui/type_label` and `/batch` and `/key` still
-  go through Windows-MCP on the **visible** desktop and do **not** yet see the hidden windows — a
-  dedicated UIA layer for `agent_dsk` is the next pass. Use coordinate input + `/find` against the
-  composite for now.
+- `/batch` and `/key` still go through Windows-MCP on the **visible** desktop; prefer `/ui/*` and the
+  coordinate endpoints for hidden-desktop work.
 - `PrintWindow` can return black for some GPU/WebGL/Chromium/Electron surfaces; fine for classic
-  desktop, web and native apps. Validate per target app.
+  desktop, web and native apps. Validate per target app. (UIA itself is unaffected — it reads the
+  control tree, not pixels.)
 - `/move` with `relative=true` returns **409** on the hidden desktop (no user cursor to anchor to).
 - Coordinates are absolute virtual-screen pixels, identical to the composite image space.
 

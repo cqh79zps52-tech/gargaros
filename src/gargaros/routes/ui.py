@@ -78,8 +78,20 @@ def _surface_label_error(result: Any) -> None:
         raise ClientException(detail=msg)
 
 
+def _uia_active(request: Request):
+    """Return the HiddenDesktop if its UIA layer is usable, else None."""
+    hd = getattr(request.app.state, "hidden_desktop", None)
+    if hd is not None and getattr(hd, "uia_ready", False):
+        return hd
+    return None
+
+
 @post("/ui/snapshot")
 async def ui_snapshot(request: Request, data: SnapshotBody) -> dict:
+    hd = _uia_active(request)
+    if hd is not None:
+        elements = await anyio.to_thread.run_sync(hd.uia_snapshot)
+        return {"elements": elements, "count": len(elements), "source": "hidden_desktop"}
     args = translate.snapshot_args(
         use_vision=data.use_vision,
         use_dom=data.use_dom,
@@ -95,6 +107,15 @@ async def ui_snapshot(request: Request, data: SnapshotBody) -> dict:
 
 @post("/ui/click_label")
 async def ui_click_label(request: Request, data: ClickLabelBody) -> dict:
+    hd = _uia_active(request)
+    if hd is not None:
+        try:
+            method = await anyio.to_thread.run_sync(hd.uia_click_label, data.label)
+        except KeyError:
+            raise HTTPException(
+                status_code=409, detail="unknown label; call /ui/snapshot first"
+            ) from None
+        return {"ok": True, "method": method}
     args = translate.click_label_args(label=data.label, button=data.button, double=data.double)
     result = await request.app.state.backend.call_tool("Click", args)
     _surface_label_error(result)
@@ -103,6 +124,17 @@ async def ui_click_label(request: Request, data: ClickLabelBody) -> dict:
 
 @post("/ui/type_label")
 async def ui_type_label(request: Request, data: TypeLabelBody) -> dict:
+    hd = _uia_active(request)
+    if hd is not None:
+        try:
+            method = await anyio.to_thread.run_sync(
+                hd.uia_type_label, data.label, data.text, data.clear, data.press_enter
+            )
+        except KeyError:
+            raise HTTPException(
+                status_code=409, detail="unknown label; call /ui/snapshot first"
+            ) from None
+        return {"ok": True, "method": method}
     args = translate.type_label_args(
         label=data.label,
         text=data.text,

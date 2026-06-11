@@ -20,10 +20,17 @@ import concurrent.futures
 import ctypes
 import logging
 import queue
+import sys
 import threading
 from collections.abc import Callable
 from ctypes import wintypes
 from dataclasses import dataclass
+
+# comtypes (imported lazily by the UIA layer) calls CoInitializeEx at import time using
+# sys.coinit_flags. Force MTA (0): the UIA worker thread makes blocking out-of-process COM
+# calls (SetFocus/SetValue) with no message pump, which would deadlock under STA.
+if not hasattr(sys, "coinit_flags"):
+    sys.coinit_flags = 0  # COINIT_MULTITHREADED
 
 import pywintypes
 import win32api
@@ -136,6 +143,18 @@ def _key_input(char: str, keyup: bool = False) -> _INPUT:
     return _INPUT(INPUT_KEYBOARD, _INPUTUNION(ki=ki))
 
 
+def _vk_input(vk: int, keyup: bool = False) -> _INPUT:
+    flags = KEYEVENTF_KEYUP if keyup else 0
+    ki = _KEYBDINPUT(vk, 0, flags, 0, None)
+    return _INPUT(INPUT_KEYBOARD, _INPUTUNION(ki=ki))
+
+
+VK_CONTROL = 0x11
+VK_DELETE = 0x2E
+VK_RETURN = 0x0D
+VK_A = 0x41
+
+
 def _lparam(x: int, y: int) -> int:
     return ((y & 0xFFFF) << 16) | (x & 0xFFFF)
 
@@ -196,6 +215,48 @@ def descendant_pids(roots: set[int]) -> set[int]:
     return result
 
 
+# UIA control types we treat as interactive / labelable.
+INTERACTIVE_CONTROL_TYPES = frozenset({
+    "ButtonControl", "EditControl", "CheckBoxControl", "RadioButtonControl",
+    "ComboBoxControl", "ListItemControl", "MenuItemControl", "HyperlinkControl",
+    "TabItemControl", "SliderControl", "SpinnerControl", "TreeItemControl",
+    "DocumentControl", "SplitButtonControl", "ToggleButtonControl", "ThumbControl",
+})
+
+
+def _safe(fn, default=None):
+    """Run a UIA accessor, swallowing dead-element / COM errors."""
+    try:
+        return fn()
+    except Exception:  # noqa: BLE001
+        return default
+
+
+def _describe_element(el) -> dict | None:
+    """Return label-able info for an interactive element, or None to skip it."""
+    ctn = _safe(lambda: el.ControlTypeName)
+    if ctn not in INTERACTIVE_CONTROL_TYPES:
+        return None
+    if not _safe(lambda: el.IsEnabled, False):
+        return None
+    if _safe(lambda: el.IsOffscreen, True):
+        return None
+    rect = _safe(lambda: el.BoundingRectangle)
+    if rect is None:
+        return None
+    left, top, right, bottom = rect.left, rect.top, rect.right, rect.bottom
+    if right - left <= 0 or bottom - top <= 0:
+        return None
+    name = (_safe(lambda: el.Name, "") or "").strip()
+    ctype = (_safe(lambda: el.LocalizedControlType, "") or ctn).strip().title()
+    return {
+        "name": name,
+        "control_type": ctype,
+        "bounds": [left, top, right, bottom],
+        "center": [(left + right) // 2, (top + bottom) // 2],
+    }
+
+
 @dataclass
 class WindowLayout:
     """Absolute screen rect of a hidden window in the last composite frame."""
@@ -253,6 +314,9 @@ class HiddenDesktop:
         self.pids: set[int] = set()
         self.layout: list[WindowLayout] = []
         self._layout_lock = threading.Lock()
+        self.uia_labels: dict[int, object] = {}  # label -> UIA element (touched only on worker)
+        self.uia_meta: dict[int, dict] = {}  # label -> {hwnd, bounds}
+        self.uia_ready = False
         self._jobs: queue.Queue = queue.Queue()
         self._ready = threading.Event()
         self._worker_err: BaseException | None = None
@@ -272,6 +336,21 @@ class HiddenDesktop:
             self._worker_err = OSError("SetThreadDesktop(agent_dsk) failed")
             self._ready.set()
             return
+        # Initialize COM + the UIA automation singleton ON THIS THREAD so every UIA call
+        # (which must stay in one apartment) is marshalled here alongside SendInput. UIA is
+        # optional: if it fails, coordinate input still works.
+        try:
+            # MTA (COINIT_MULTITHREADED = 0). An STA thread without a message pump can
+            # deadlock on blocking out-of-process COM calls (e.g. SetFocus/SetValue); MTA
+            # does not require a pump. The binding's later CoInitialize(None) is then a
+            # no-op (RPC_E_CHANGED_MODE), leaving us in MTA.
+            ctypes.windll.ole32.CoInitializeEx(None, 0)
+            from windows_mcp.uia.core import _AutomationClient
+
+            _AutomationClient.instance()
+            self.uia_ready = True
+        except Exception:  # noqa: BLE001
+            logger.exception("UIA init failed on agent_dsk worker; UIA endpoints disabled")
         self._ready.set()
         while True:
             fn, fut = self._jobs.get()
@@ -447,16 +526,28 @@ class HiddenDesktop:
             wheel = _mouse_input(MOUSEEVENTF_HWHEEL, 0, 0, data)
         self._run_on_worker(lambda: _send_inputs([move, wheel]))
 
-    def send_input_type(self, text: str, press_enter: bool = False) -> None:
+    def _raw_type(self, text: str, press_enter: bool = False) -> None:
+        """Build + dispatch unicode keystrokes inline (caller is already on the worker)."""
         seq: list[_INPUT] = []
         for ch in text:
             seq.append(_key_input(ch, keyup=False))
             seq.append(_key_input(ch, keyup=True))
         if press_enter:
-            seq.append(_key_input("\r", keyup=False))
-            seq.append(_key_input("\r", keyup=True))
+            seq.append(_vk_input(VK_RETURN, keyup=False))
+            seq.append(_vk_input(VK_RETURN, keyup=True))
         if seq:
-            self._run_on_worker(lambda: _send_inputs(seq))
+            _send_inputs(seq)
+
+    def _raw_select_all_delete(self) -> None:
+        """Ctrl+A then Delete, inline (caller is already on the worker)."""
+        _send_inputs([
+            _vk_input(VK_CONTROL, False), _vk_input(VK_A, False),
+            _vk_input(VK_A, True), _vk_input(VK_CONTROL, True),
+            _vk_input(VK_DELETE, False), _vk_input(VK_DELETE, True),
+        ])
+
+    def send_input_type(self, text: str, press_enter: bool = False) -> None:
+        self._run_on_worker(lambda: self._raw_type(text, press_enter))
 
     def send_input_drag(self, x1: int, y1: int, x2: int, y2: int, button: str = "left") -> None:
         nx1, ny1 = self._abs_xy(x1, y1)
@@ -470,3 +561,137 @@ class HiddenDesktop:
             _mouse_input(up | base, nx2, ny2),
         ]
         self._run_on_worker(lambda: _send_inputs(seq))
+
+    # --- UIA layer (runs on the COM-initialized worker thread; zero cursor) ------
+    def uia_snapshot(self) -> list[dict]:
+        """Label every interactive UIA element across all hidden windows."""
+        if not self.uia_ready:
+            raise RuntimeError("UIA is not available on the hidden desktop")
+        windows = self.enum_windows()
+        return self._run_on_worker(lambda: self._uia_snapshot_impl(windows), timeout=30.0)
+
+    def uia_click_label(self, label: int) -> str:
+        if not self.uia_ready:
+            raise RuntimeError("UIA is not available on the hidden desktop")
+        return self._run_on_worker(lambda: self._uia_click_impl(label), timeout=20.0)
+
+    def uia_type_label(self, label: int, text: str, clear: bool, press_enter: bool) -> str:
+        if not self.uia_ready:
+            raise RuntimeError("UIA is not available on the hidden desktop")
+        return self._run_on_worker(
+            lambda: self._uia_type_impl(label, text, clear, press_enter), timeout=20.0
+        )
+
+    # The _uia_*_impl methods always run ON the worker thread (single COM apartment).
+    def _uia_snapshot_impl(self, windows: list[tuple[int, tuple[int, int, int, int]]]) -> list[dict]:
+        from windows_mcp.uia.controls import ControlFromHandle, WalkControl
+
+        elements: list[dict] = []
+        labels: dict[int, object] = {}
+        meta: dict[int, dict] = {}
+        label = 0
+        for hwnd, _rect in windows:
+            try:
+                root = ControlFromHandle(hwnd)
+            except Exception:  # noqa: BLE001
+                continue
+            if root is None:
+                continue
+            win_name = _safe(lambda root=root: root.Name) or ""
+            try:
+                walker = WalkControl(root, includeTop=False, maxDepth=50)
+            except Exception:  # noqa: BLE001
+                continue
+            for child, _depth in walker:
+                if label >= 800:  # safety cap
+                    break
+                info = _describe_element(child)
+                if info is None:
+                    continue
+                label += 1
+                labels[label] = child
+                meta[label] = {"hwnd": hwnd, "bounds": info["bounds"]}
+                elements.append({"label": label, "window": win_name, **info})
+        with self._layout_lock:
+            self.uia_labels = labels
+            self.uia_meta = meta
+        return elements
+
+    def _uia_click_impl(self, label: int) -> str:
+        el = self.uia_labels.get(label)
+        if el is None:
+            raise KeyError(label)
+        from windows_mcp.uia.enums import PatternId
+        from windows_mcp.uia.patterns import (
+            ExpandCollapsePattern,
+            InvokePattern,
+            LegacyIAccessiblePattern,
+            SelectionItemPattern,
+            TogglePattern,
+        )
+
+        try:
+            el.SetFocus()
+        except Exception:  # noqa: BLE001
+            pass
+        attempts = (
+            (PatternId.InvokePattern, InvokePattern, "Invoke"),
+            (PatternId.TogglePattern, TogglePattern, "Toggle"),
+            (PatternId.SelectionItemPattern, SelectionItemPattern, "Select"),
+            (PatternId.ExpandCollapsePattern, ExpandCollapsePattern, "Expand"),
+            (PatternId.LegacyIAccessiblePattern, LegacyIAccessiblePattern, "DoDefaultAction"),
+        )
+        for pid, wrapper, method in attempts:
+            raw = _safe(lambda pid=pid: el.GetPattern(pid))
+            if not raw:
+                continue
+            try:
+                w = wrapper(raw)
+                fn = getattr(w, method, None)
+                if fn is None:
+                    continue
+                fn()
+                return method.lower()
+            except Exception:  # noqa: BLE001
+                continue
+        # Fallback: PostMessage click at the element center inside its window.
+        m = self.uia_meta.get(label)
+        if m:
+            left, top, right, bottom = m["bounds"]
+            cx, cy = (left + right) // 2, (top + bottom) // 2
+            self.click_background(m["hwnd"], cx - left, cy - top)
+            return "postmessage"
+        raise RuntimeError(f"no actionable pattern for label {label}")
+
+    def _uia_type_impl(self, label: int, text: str, clear: bool, press_enter: bool) -> str:
+        el = self.uia_labels.get(label)
+        if el is None:
+            raise KeyError(label)
+        from windows_mcp.uia.enums import PatternId
+        from windows_mcp.uia.patterns import ValuePattern
+
+        try:
+            el.SetFocus()
+        except Exception:  # noqa: BLE001
+            pass
+        # DocumentControl.SetValue typically blocks for seconds then fails (rich text edits),
+        # so go straight to keystrokes for documents; ValuePattern is for plain EditControls.
+        ctn = _safe(lambda: el.ControlTypeName, "")
+        raw = None if ctn == "DocumentControl" else _safe(lambda: el.GetPattern(PatternId.ValuePattern))
+        if raw:
+            try:
+                vp = ValuePattern(raw)
+                if clear or not text:
+                    if vp.SetValue("") and not text:
+                        return "setvalue"
+                if vp.SetValue(text):
+                    if press_enter:
+                        self._raw_type("", press_enter=True)
+                    return "setvalue"
+            except Exception:  # noqa: BLE001
+                pass
+        # Fallback: focused-element keystrokes (works for Document/canvas edits).
+        if clear:
+            self._raw_select_all_delete()
+        self._raw_type(text, press_enter=press_enter)
+        return "keystrokes"
