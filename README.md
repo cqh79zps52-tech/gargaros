@@ -63,7 +63,8 @@ Full OpenAPI schema: `http://127.0.0.1:7331/schema`.
 | POST | `/ui/click_label` | `{label,button,double}` — click element by label id from a recent snapshot |
 | POST | `/ui/type_label` | `{label,text,clear,press_enter}` |
 | POST | `/ui/scrape` | `{url,query}` — open a URL and extract content |
-| POST | `/ui/launch_app` | `{name,mode}` — launch/switch/resize an app |
+| POST | `/ui/launch_app` | `{name,mode}` — launch/switch/resize an app on the visible desktop |
+| POST | `/agent/launch_app` | `{cmdline}` — launch a process on the hidden desktop (`agent_dsk`) |
 
 `ui_click_label` and `ui_type_label` return **409** if no recent `/ui/snapshot` has been taken — call snapshot first to populate the desktop state.
 
@@ -100,7 +101,9 @@ How it changes the endpoints:
 - **Coordinate input** (`/click`, `/move`, `/type`, `/scroll`, `/drag`): routed to `agent_dsk` via
   `PostMessage` (no cursor) when the coordinate resolves to a hidden window, otherwise via a `SendInput`
   fallback executed on a dedicated thread permanently attached to `agent_dsk` (`SetThreadDesktop`).
-- **Launch** (`/ui/launch_app`): processes are spawned with `STARTUPINFO.lpDesktop = "agent_dsk"`.
+- **Launch** (`POST /agent/launch_app` with `{cmdline}`): processes are spawned with
+  `STARTUPINFO.lpDesktop = "agent_dsk"` via `CreateProcess`. (`/ui/launch_app` still goes through
+  Windows-MCP and launches on the **visible** desktop.)
 
 Disable it (revert to driving the visible desktop through Windows-MCP) with
 `GARGAROS_HIDDEN_DESKTOP_ENABLED=0`; the desktop name is configurable via `GARGAROS_HIDDEN_DESKTOP`.

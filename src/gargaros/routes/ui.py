@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from typing import Any
 
+import anyio
 from litestar import Request, post
 from litestar.exceptions import ClientException, HTTPException
 from msgspec import Struct
@@ -44,6 +45,10 @@ class LaunchAppBody(Struct):
     mode: str = "launch"
     window_loc: list[int] | None = None
     window_size: list[int] | None = None
+
+
+class AgentLaunchBody(Struct):
+    cmdline: str
 
 
 def _serialize_content(result: Any) -> dict:
@@ -120,8 +125,29 @@ async def ui_scrape(request: Request, data: ScrapeBody) -> dict:
 
 @post("/ui/launch_app")
 async def ui_launch_app(request: Request, data: LaunchAppBody) -> dict:
+    # Note: this routes through Windows-MCP and launches on the VISIBLE desktop. To launch
+    # on the hidden desktop (agent_dsk), use POST /agent/launch_app instead.
     args = translate.app_args(
         name=data.name, mode=data.mode, window_loc=data.window_loc, window_size=data.window_size
     )
     result = await request.app.state.backend.call_tool("App", args)
     return _serialize_content(result)
+
+
+@post("/agent/launch_app")
+async def agent_launch_app(request: Request, data: AgentLaunchBody) -> dict:
+    """Launch a process on the hidden desktop (agent_dsk) via CreateProcess.
+
+    ``cmdline`` is passed straight to CreateProcess, so use a real command line such as
+    "notepad.exe" or "msedge.exe https://example.com" (no Start-menu name resolution).
+    """
+    hd = getattr(request.app.state, "hidden_desktop", None)
+    if hd is None:
+        raise HTTPException(
+            status_code=409,
+            detail="hidden desktop is not active (GARGAROS_HIDDEN_DESKTOP_ENABLED=0?)",
+        )
+    if not data.cmdline.strip():
+        raise ClientException(detail="cmdline is required")
+    pid = await anyio.to_thread.run_sync(hd.launch, data.cmdline)
+    return {"ok": True, "pid": pid, "desktop": hd.name}

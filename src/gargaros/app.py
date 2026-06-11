@@ -32,6 +32,7 @@ from gargaros.routes.input import click, drag, key, move, scroll, type_text
 from gargaros.routes.meta import health
 from gargaros.routes.screenshot import latest_b64, screenshot
 from gargaros.routes.ui import (
+    agent_launch_app,
     ui_click_label,
     ui_launch_app,
     ui_scrape,
@@ -90,6 +91,7 @@ def build_app(settings: Settings | None = None, *, backend: MCPBackend | None = 
             ui_type_label,
             ui_scrape,
             ui_launch_app,
+            agent_launch_app,
             find,
             browser_snapshot,
             browser_click,
